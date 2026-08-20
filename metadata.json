@@ -1,0 +1,6 @@
+{
+  "name": "AutoSMM AI Admin Dashboard",
+  "description": "Enterprise-grade AI Social Media Automation dashboard for business management, prompt engineering, and multi-channel content scheduling.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
