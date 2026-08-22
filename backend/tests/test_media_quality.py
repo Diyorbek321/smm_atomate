@@ -521,3 +521,81 @@ class TestStyleDna:
             topic="Mavzu",
         )
         assert VisualAgent()._style(request).lens == "85mm portrait"
+
+
+class TestLoudness:
+    """Social feeds normalise to about -14 LUFS; arriving at -16 is arriving quiet."""
+
+    MEASURED: ClassVar[dict[str, str]] = {
+        "input_i": "-23.6",
+        "input_tp": "-2.1",
+        "input_lra": "7.4",
+        "input_thresh": "-33.8",
+        "target_offset": "0.3",
+    }
+
+    def test_the_target_matches_what_the_platforms_do(self):
+        from app.services import video_editor as ve
+
+        assert ve.LOUDNESS_TARGET == -14.0
+        assert "I=-14.0" in ve.audio_filter()
+
+    def test_a_measurement_switches_loudnorm_to_one_known_gain(self):
+        from app.services import video_editor as ve
+
+        chain = ve.audio_filter(self.MEASURED)
+        assert "linear=true" in chain
+        assert "measured_I=-23.6" in chain
+        assert "measured_thresh=-33.8" in chain
+
+    def test_without_a_measurement_it_still_normalises(self):
+        """A failed first pass must not cost the clip its audio."""
+        from app.services import video_editor as ve
+
+        chain = ve.audio_filter(None)
+        assert "loudnorm" in chain and "linear=true" not in chain
+
+    def test_denoising_is_gentler_than_it_was(self):
+        """-24 dB treated most of a phone recording as noise."""
+        from app.services import video_editor as ve
+
+        assert ve.NOISE_FLOOR_DB <= -30
+        assert f"afftdn=nf={ve.NOISE_FLOOR_DB}" in ve.audio_filter()
+
+    @staticmethod
+    def _measure(monkeypatch, stderr: str):
+        from app.services import video_editor as ve
+
+        async def fake_run(command, *, stage):
+            return stderr
+
+        monkeypatch.setattr(ve, "_run", fake_run)
+        monkeypatch.setattr(ve, "_binary", lambda: "/usr/bin/ffmpeg")
+        return asyncio.run(ve.measure_loudness(Path("clip.mp4")))
+
+    def test_the_json_tail_is_read_out_of_the_ffmpeg_log(self, monkeypatch):
+        noise = "frame= 100 fps=0 q=-1.0 size=N/A\n[Parsed_loudnorm_0 @ 0x1] \n"
+        report = (
+            '{\n"input_i" : "-23.60",\n"input_tp" : "-2.10",\n"input_lra" : "7.40",\n'
+            '"input_thresh" : "-33.80",\n"output_i" : "-14.00",\n"target_offset" : "0.30"\n}'
+        )
+        measured = self._measure(monkeypatch, noise + report)
+        assert measured is not None
+        assert measured["input_i"] == "-23.60"
+        assert measured["target_offset"] == "0.30"
+
+    def test_silence_measures_as_infinity_and_is_refused(self, monkeypatch):
+        report = (
+            '{"input_i" : "-inf", "input_tp" : "-inf", "input_lra" : "0.00", '
+            '"input_thresh" : "-inf", "target_offset" : "0.00"}'
+        )
+        assert self._measure(monkeypatch, report) is None
+
+    def test_a_truncated_report_is_refused(self, monkeypatch):
+        assert self._measure(monkeypatch, '{"input_i" : "-23.6"') is None
+
+    def test_a_report_missing_a_field_is_refused(self, monkeypatch):
+        assert self._measure(monkeypatch, '{"input_i" : "-23.6"}') is None
+
+    def test_no_log_at_all_is_refused(self, monkeypatch):
+        assert self._measure(monkeypatch, "ffmpeg said nothing useful") is None

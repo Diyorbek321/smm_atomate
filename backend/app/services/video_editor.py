@@ -16,6 +16,7 @@ this code — see app/core/plans.py.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import tempfile
 from collections.abc import Callable
@@ -42,6 +43,15 @@ CAPTION_BOTTOM = 320
 CAPTION_OUTLINE = 5
 CAPTION_BOX = WIDTH - 2 * CAPTION_MARGIN - 2 * CAPTION_OUTLINE - 2
 CAPTION_LINES = 2
+#: Social feeds normalise what they receive to about -14 LUFS. Delivering
+#: -16 is not "safer" — it just arrives quieter than everything around it.
+LOUDNESS_TARGET = -14.0
+TRUE_PEAK = -1.5
+LOUDNESS_RANGE = 11
+#: afftdn defaults to -50 dB; the -24 this used to run at treats far more of
+#: the signal as noise, which is what makes phone speech sound underwater.
+NOISE_FLOOR_DB = -32
+
 #: A word spoken faster than this still gets a readable moment on screen.
 MIN_CUE_SEC = 0.12
 #: How long a caption stays up when the transcript gives no usable end time.
@@ -227,9 +237,62 @@ def colour_filter() -> str:
     return "eq=contrast=1.06:saturation=1.12:brightness=0.012,unsharp=5:5:0.55:5:5:0.0"
 
 
-def audio_filter() -> str:
-    """Denoise, drop rumble, then normalise to the loudness social feeds expect."""
-    return "afftdn=nf=-24,highpass=f=90,loudnorm=I=-16:TP=-1.5:LRA=11"
+def audio_filter(measured: dict[str, str] | None = None) -> str:
+    """Denoise, drop rumble, then normalise to the loudness social feeds expect.
+
+    Given a first-pass measurement, loudnorm switches to its linear mode: it
+    applies one known gain instead of guessing its way through the file, and
+    lands on the target instead of near it. Without one it still works, just
+    less exactly — a measurement failure must not cost the clip its audio.
+    """
+    chain = [f"afftdn=nf={NOISE_FLOOR_DB}", "highpass=f=90"]
+    norm = f"loudnorm=I={LOUDNESS_TARGET}:TP={TRUE_PEAK}:LRA={LOUDNESS_RANGE}"
+    if measured:
+        norm += (
+            f":measured_I={measured['input_i']}"
+            f":measured_TP={measured['input_tp']}"
+            f":measured_LRA={measured['input_lra']}"
+            f":measured_thresh={measured['input_thresh']}"
+            f":offset={measured['target_offset']}"
+            ":linear=true"
+        )
+    chain.append(norm)
+    return ",".join(chain)
+
+
+async def measure_loudness(path: Path) -> dict[str, str] | None:
+    """First pass: what this audio actually measures, as loudnorm reports it."""
+    try:
+        stderr = await _run(
+            [
+                _binary(), "-hide_banner", "-nostats", "-i", str(path), "-vn",
+                "-af", f"loudnorm=I={LOUDNESS_TARGET}:TP={TRUE_PEAK}:"
+                       f"LRA={LOUDNESS_RANGE}:print_format=json",
+                "-f", "null", "-",
+            ],
+            stage="loudness",
+        )
+    except (PublishError, ConfigurationError) as exc:
+        log.warning("loudness_measure_failed", error=str(exc)[:200])
+        return None
+
+    start = stderr.rfind("{")
+    end = stderr.rfind("}")
+    if start < 0 or end < start:
+        return None
+    try:
+        measured = json.loads(stderr[start : end + 1])
+    except ValueError:
+        return None
+
+    needed = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+    if any(key not in measured for key in needed):
+        return None
+    # A silent track measures -inf, and loudnorm cannot act on that.
+    if any(str(measured[key]).lstrip("-").startswith("inf") for key in needed):
+        return None
+    log.info("loudness_measured", integrated=measured["input_i"], peak=measured["input_tp"])
+    return {key: str(measured[key]) for key in needed}
 
 
 #: Whisper's Uzbek drifts into Turkish-looking spellings ("gelecekte" for
@@ -572,6 +635,7 @@ async def normalise(
     settings_: EditSettings,
     segments: list[tuple[float, float]],
     report: EditReport,
+    measured: dict[str, str] | None = None,
 ) -> None:
     """One pass: trim, reframe, grade, clean the audio."""
     with_audio = info.has_audio
@@ -583,7 +647,7 @@ async def normalise(
     video_chain.append(f"fps={FPS},format=yuv420p")
 
     command = [_binary(), "-y", "-hide_banner", "-i", str(source)]
-    audio_chain = audio_filter() if (with_audio and settings_.clean_audio) else "anull"
+    audio_chain = audio_filter(measured) if (with_audio and settings_.clean_audio) else "anull"
 
     if segments:
         graph = trim_filter(segments, with_audio=with_audio)
@@ -838,7 +902,12 @@ async def edit_video(
             report.skip("audio", "the footage has no sound")
 
         current = work / "body.mp4"
-        await normalise(raw, current, info, options, segments, report)
+        # Loudness is measured before anything is applied: one known gain lands
+        # on the target, where a single blind pass only gets close.
+        measured = (
+            await measure_loudness(raw) if (options.clean_audio and info.has_audio) else None
+        )
+        await normalise(raw, current, info, options, segments, report, measured)
 
         # ---- subtitles ------------------------------------------------- #
         if options.subtitles and info.has_audio:
