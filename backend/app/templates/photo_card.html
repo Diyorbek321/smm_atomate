@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<style>{% include "base.css" %}
+.canvas { background: {{ colors.bg }}; gap: 26px; }
+.photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.shade {
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(180deg, {{ colors.bg }}d9 0%, {{ colors.bg }}55 14%, transparent 30%),
+    linear-gradient(0deg, {{ colors.bg }}f5 0%, {{ colors.bg }}cc 26%, {{ colors.bg }}55 46%, transparent 62%);
+}
+.brandbar, .footer, .copy { position: relative; }
+.copy { margin-top: auto; display: flex; flex-direction: column; gap: 24px; }
+.title { font-size: {{ layout.title_size }}px; max-width: 94%; text-shadow: 0 2px 18px {{ colors.bg }}aa; }
+.body-text { opacity: .95; max-width: 88%; text-shadow: 0 1px 12px {{ colors.bg }}aa; }
+.goldline { width: 92px; height: 4px; border-radius: 2px; background: {{ colors.accent }}; }
+</style>
+</head>
+<body>
+  <div class="canvas">
+    <img class="photo" src="{{ photo }}" alt="">
+    <div class="shade"></div>
+    <div class="brandbar">{% if logo %}<img class="logo" src="{{ logo }}" alt="">{% else %}<span class="dot"></span>{% endif %}<span class="name">{{ brand }}</span></div>
+    <div class="copy">
+      {% if kicker %}<div class="pill">{{ kicker }}</div>{% endif %}
+      <div class="goldline"></div>
+      <div class="title">{{ title }}</div>
+      {% if body %}<div class="body-text">{{ body }}</div>{% endif %}
+    </div>
+    <div class="footer">
+      <div>{{ contact }}</div>
+      {% if cta %}<div class="cta">{{ cta }}</div>{% endif %}
+    </div>
+  </div>
+</body>
+</html>

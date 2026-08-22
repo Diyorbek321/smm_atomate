@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Building2, Calendar, Wand2, Command } from 'lucide-react';
 import { useApp } from '../AppContext';
+import { CATEGORY_LABELS, PLATFORM_LABELS } from './shared';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -17,11 +18,13 @@ interface CommandPaletteProps {
 }
 
 export function CommandPalette({ open, onOpenChange, onSelect }: CommandPaletteProps) {
-  const { businesses, posts, templates } = useApp();
+  const { businesses, items, templates } = useApp();
   const [search, setSearch] = useState('');
 
   const filteredBusinesses = businesses.filter(b => b.name.toLowerCase().includes(search.toLowerCase())).slice(0, 3);
-  const filteredPosts = posts.filter(p => p.headline.toLowerCase().includes(search.toLowerCase())).slice(0, 3);
+  const filteredPosts = items
+    .filter(item => `${item.headline} ${item.topic}`.toLowerCase().includes(search.toLowerCase()))
+    .slice(0, 3);
   const filteredTemplates = templates.filter(t => t.name.toLowerCase().includes(search.toLowerCase())).slice(0, 3);
 
   useEffect(() => {
@@ -63,7 +66,7 @@ export function CommandPalette({ open, onOpenChange, onSelect }: CommandPaletteP
                   <Building2 className="w-4 h-4 text-slate-500 group-hover:text-indigo-400" />
                   <div className="flex-1 overflow-hidden">
                     <p className="text-sm text-slate-200 truncate">{b.name}</p>
-                    <p className="text-[10px] text-slate-500 truncate">{b.industry}</p>
+                    <p className="text-[10px] text-slate-500 truncate">{CATEGORY_LABELS[b.category]}</p>
                   </div>
                   <Badge className="bg-slate-950 text-[9px] h-4">Business</Badge>
                 </button>
@@ -77,8 +80,8 @@ export function CommandPalette({ open, onOpenChange, onSelect }: CommandPaletteP
                 >
                   <Calendar className="w-4 h-4 text-slate-500 group-hover:text-indigo-400" />
                   <div className="flex-1 overflow-hidden">
-                    <p className="text-sm text-slate-200 truncate">{p.headline}</p>
-                    <p className="text-[10px] text-slate-500 truncate">{p.platform}</p>
+                    <p className="text-sm text-slate-200 truncate">{p.headline || p.topic}</p>
+                    <p className="text-[10px] text-slate-500 truncate">{PLATFORM_LABELS[p.platform]}</p>
                   </div>
                   <Badge className="bg-slate-950 text-[9px] h-4">Post</Badge>
                 </button>
@@ -93,7 +96,7 @@ export function CommandPalette({ open, onOpenChange, onSelect }: CommandPaletteP
                   <Wand2 className="w-4 h-4 text-slate-500 group-hover:text-indigo-400" />
                   <div className="flex-1 overflow-hidden">
                     <p className="text-sm text-slate-200 truncate">{t.name}</p>
-                    <p className="text-[10px] text-slate-500 truncate">{t.category}</p>
+                    <p className="text-[10px] text-slate-500 truncate">{t.agent}</p>
                   </div>
                   <Badge className="bg-slate-950 text-[9px] h-4">Template</Badge>
                 </button>

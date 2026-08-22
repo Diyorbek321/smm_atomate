@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<style>{% include "base.css" %}
+.canvas { justify-content: center; gap: 28px; }
+.quote { font-size: {{ layout.title_size }}px; font-weight: 700; line-height: 1.18; letter-spacing: -.02em; }
+.quote::before { content: '“'; color: {{ colors.accent }}; font-size: 1.4em; line-height: 0; }
+.author { display: flex; align-items: center; gap: 18px; margin-top: 12px; }
+.avatar {
+  width: 84px; height: 84px; border-radius: 999px; flex: none;
+  background: {{ colors.accent }}33; border: 2px solid {{ colors.accent }};
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 34px; color: {{ colors.accent }};
+}
+.author .meta { display: flex; flex-direction: column; gap: 6px; }
+.author .n { font-size: {{ layout.body_size }}px; font-weight: 700; }
+.author .r { font-size: {{ layout.footer_size }}px; opacity: .7; }
+.result { color: {{ colors.accent }}; font-weight: 800; }
+</style>
+</head>
+<body>
+  <div class="canvas">
+    <div class="grid-overlay"></div>
+    <div class="brandbar">{% if logo %}<img class="logo" src="{{ logo }}" alt="">{% else %}<span class="dot"></span>{% endif %}<span class="name">{{ brand }}</span></div>
+    <div class="quote">{{ quote }}</div>
+    <div class="author">
+      <div class="avatar">{{ initials }}</div>
+      <div class="meta">
+        <div class="n">{{ author }}</div>
+        <div class="r">{% if result %}<span class="result">{{ result }}</span>{% else %}{{ role }}{% endif %}</div>
+      </div>
+    </div>
+    <div class="footer">
+      <div>{{ contact }}</div>
+      {% if cta %}<div class="cta">{{ cta }}</div>{% endif %}
+    </div>
+  </div>
+</body>
+</html>

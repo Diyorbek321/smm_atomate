@@ -1,0 +1,39 @@
+# --- Web / API ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# --- Data / Validation ---
+pydantic==2.10.5
+pydantic-settings==2.7.1
+email-validator==2.2.0
+
+# --- Database ---
+sqlalchemy[asyncio]==2.0.37
+asyncpg==0.30.0
+psycopg[binary]==3.2.3
+alembic==1.14.1
+greenlet==3.1.1
+
+# --- Cache / Queue ---
+redis==5.2.1
+celery[redis]==5.4.0
+flower==2.0.1
+
+# --- Telegram bot ---
+aiogram==3.17.0
+
+# --- HTTP / AI providers ---
+httpx==0.28.1
+tenacity==9.0.0
+
+# --- Rendering ---
+jinja2==3.1.5
+playwright==1.49.1
+Pillow==11.1.0
+
+# --- Security / misc ---
+cryptography==44.0.0
+python-dateutil==2.9.0.post0
+pytz==2024.2
+structlog==25.1.0

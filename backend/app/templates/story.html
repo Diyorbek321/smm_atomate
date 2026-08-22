@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<style>{% include "base.css" %}
+.canvas { gap: 30px; }
+.copy { display: flex; flex-direction: column; justify-content: center; gap: 28px; flex: 1; }
+.title { font-size: {{ layout.title_size }}px; max-width: 92%; }
+.kicker { font-size: {{ layout.body_size }}px; font-weight: 600; opacity: .7; letter-spacing: .12em; text-transform: uppercase; }
+.highlight-box {
+  margin-top: 8px; padding: 28px 32px; border-radius: 24px;
+  background: {{ colors.surface }}; border: 1px solid {{ colors.text }}1f;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.price { font-size: {{ layout.title_size }}px; font-weight: 800; color: {{ colors.accent }}; letter-spacing: -.03em; }
+.strike { text-decoration: line-through; opacity: .45; font-size: {{ layout.body_size }}px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="canvas">
+    <div class="grid-overlay"></div>
+    <div class="brandbar">{% if logo %}<img class="logo" src="{{ logo }}" alt="">{% else %}<span class="dot"></span>{% endif %}<span class="name">{{ brand }}</span></div>
+    <div class="copy">
+      {% if kicker %}<div class="kicker">{{ kicker }}</div>{% endif %}
+      <div class="title">{{ title }}</div>
+      {% if body %}<div class="body-text">{{ body }}</div>{% endif %}
+      {% if highlight %}
+      <div class="highlight-box">
+        <div class="price">{{ highlight }}</div>
+        {% if subhighlight %}<div class="strike">{{ subhighlight }}</div>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="footer">
+      <div>{{ contact }}</div>
+      {% if cta %}<div class="cta">{{ cta }}</div>{% endif %}
+    </div>
+  </div>
+</body>
+</html>

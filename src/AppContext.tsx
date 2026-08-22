@@ -3,10 +3,28 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Business, Post, AIPromptTemplate, DashboardStats } from './types';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { ApiError, api, errorMessage } from './api/client';
+import type {
+  AnalyticsSummary,
+  Business,
+  BusinessCreate,
+  BusinessUpdate,
+  ContentItem,
+  ContentItemStatus,
+  ContentItemUpdate,
+  ContentPlan,
+  GenerateItemRequest,
+  GeneratePlanRequest,
+  ItemFilters,
+  ProviderStatus,
+  PromptTemplate,
+  PromptTemplateCreate,
+  PromptTemplateUpdate,
+} from './api/types';
 
 export type Theme = 'light' | 'dark';
+export type ConnectionState = 'connecting' | 'online' | 'offline';
 
 export interface SystemLog {
   id: string;
@@ -15,241 +33,484 @@ export interface SystemLog {
   timestamp: string;
 }
 
-export interface ApiUsageLog {
-  id: string;
-  endpoint: string;
-  status: number;
-  tokens: number;
-  cost: number;
-  timestamp: string;
-}
+const EMPTY_SUMMARY: AnalyticsSummary = {
+  active_businesses: 0,
+  total_businesses: 0,
+  scheduled_today: 0,
+  pending_review: 0,
+  published_24h: 0,
+  failed_24h: 0,
+  published_total: 0,
+  approval_rate: 0,
+  avg_quality_score: 0,
+  pillar_distribution: {},
+  content_type_distribution: {},
+  upcoming: [],
+  est_api_cost_usd: 0,
+};
+
+/** How often the dashboard re-reads the queue and the summary. */
+const POLL_INTERVAL_MS = 20_000;
+const ITEM_PAGE_SIZE = 50;
 
 interface AppContextType {
+  // --- connection -------------------------------------------------------
+  connection: ConnectionState;
+  connectionError: string | null;
+  retryConnection: () => void;
+
+  // --- data -------------------------------------------------------------
   businesses: Business[];
-  posts: Post[];
-  templates: AIPromptTemplate[];
-  stats: DashboardStats;
+  items: ContentItem[];
+  plans: ContentPlan[];
+  templates: PromptTemplate[];
+  summary: AnalyticsSummary;
+  providers: ProviderStatus | null;
+  loading: boolean;
+
+  // --- selection / filters ---------------------------------------------
+  selectedBusinessId: string | null;
+  selectBusiness: (id: string | null) => void;
+  itemFilters: ItemFilters;
+  setItemFilters: (filters: ItemFilters) => void;
+
+  // --- ui ---------------------------------------------------------------
   theme: Theme;
-  notifications: SystemLog[];
-  apiLogs: ApiUsageLog[];
   toggleTheme: () => void;
+  notifications: SystemLog[];
   addNotification: (message: string, type: SystemLog['type']) => void;
-  addBusiness: (b: Omit<Business, 'id'>) => void;
-  updateBusiness: (id: string, b: Partial<Business>) => void;
-  deleteBusiness: (id: string) => void;
-  addPost: (p: Omit<Post, 'id' | 'createdAt'>) => void;
-  updatePost: (id: string, p: Partial<Post>) => void;
-  deletePost: (id: string) => void;
-  bulkApprovePosts: (ids: string[]) => void;
-  bulkDeletePosts: (ids: string[]) => void;
-  bulkReschedulePosts: (ids: string[], date: string) => void;
-  addTemplate: (t: Omit<AIPromptTemplate, 'id' | 'usageCount' | 'engagementLift' | 'versions'>) => void;
-  updateTemplate: (id: string, t: Partial<AIPromptTemplate>) => void;
+
+  // --- actions ----------------------------------------------------------
+  refreshAll: () => Promise<void>;
+  refreshItems: () => Promise<void>;
+
+  addBusiness: (payload: BusinessCreate) => Promise<Business | null>;
+  updateBusiness: (id: string, payload: BusinessUpdate) => Promise<void>;
+  deleteBusiness: (id: string) => Promise<void>;
+
+  updateItem: (id: string, payload: ContentItemUpdate) => Promise<void>;
+  approveItem: (id: string) => Promise<void>;
+  rejectItem: (id: string) => Promise<void>;
+  deleteItem: (id: string) => Promise<void>;
+  bulkStatus: (ids: string[], status: ContentItemStatus) => Promise<void>;
+  regenerateItem: (id: string, instruction?: string, withImage?: boolean) => Promise<void>;
+  publishItem: (id: string, force?: boolean) => Promise<void>;
+
+  generatePlan: (payload: GeneratePlanRequest) => Promise<void>;
+  generateItem: (payload: GenerateItemRequest) => Promise<void>;
+  approvePlan: (id: string) => Promise<void>;
+
+  addTemplate: (payload: PromptTemplateCreate) => Promise<void>;
+  updateTemplate: (id: string, payload: PromptTemplateUpdate) => Promise<void>;
+  rollbackTemplate: (id: string, version: number) => Promise<void>;
+  deleteTemplate: (id: string) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>(() => {
-    const saved = localStorage.getItem('autosmm_theme');
-    return (saved as Theme) || 'dark';
-  });
+  const [theme, setTheme] = useState<Theme>(
+    () => (localStorage.getItem('autosmm_theme') as Theme) || 'dark',
+  );
+  const [notifications, setNotifications] = useState<SystemLog[]>([]);
 
-  const [notifications, setNotifications] = useState<SystemLog[]>(() => {
-    const saved = localStorage.getItem('autosmm_logs');
-    return saved ? JSON.parse(saved) : [
-      { id: '1', message: 'System initialized', type: 'info', timestamp: new Date().toISOString() },
-      { id: '2', message: 'Gemini API Connected', type: 'success', timestamp: new Date().toISOString() },
-    ];
-  });
+  const [connection, setConnection] = useState<ConnectionState>('connecting');
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const [apiLogs] = useState<ApiUsageLog[]>([
-    { id: '1', endpoint: '/api/generate', status: 200, tokens: 450, cost: 0.0012, timestamp: new Date(Date.now() - 3600000).toISOString() },
-    { id: '2', endpoint: '/api/generate', status: 200, tokens: 820, cost: 0.0024, timestamp: new Date(Date.now() - 7200000).toISOString() },
-    { id: '3', endpoint: '/api/publish', status: 201, tokens: 120, cost: 0.0004, timestamp: new Date(Date.now() - 10800000).toISOString() },
-    { id: '4', endpoint: '/api/generate', status: 500, tokens: 0, cost: 0.0000, timestamp: new Date(Date.now() - 14400000).toISOString() },
-    { id: '5', endpoint: '/api/generate', status: 200, tokens: 310, cost: 0.0009, timestamp: new Date(Date.now() - 18000000).toISOString() },
-  ]);
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [items, setItems] = useState<ContentItem[]>([]);
+  const [plans, setPlans] = useState<ContentPlan[]>([]);
+  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
+  const [summary, setSummary] = useState<AnalyticsSummary>(EMPTY_SUMMARY);
+  const [providers, setProviders] = useState<ProviderStatus | null>(null);
 
-  const [businesses, setBusinesses] = useState<Business[]>(() => {
-    const saved = localStorage.getItem('autosmm_businesses');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [selectedBusinessId, setSelectedBusinessId] = useState<string | null>(
+    () => localStorage.getItem('autosmm_business') || null,
+  );
+  const [itemFilters, setItemFilters] = useState<ItemFilters>({});
 
-  const [posts, setPosts] = useState<Post[]>(() => {
-    const saved = localStorage.getItem('autosmm_posts');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const notify = useCallback((message: string, type: SystemLog['type']) => {
+    setNotifications((prev) =>
+      [
+        { id: crypto.randomUUID(), message, type, timestamp: new Date().toISOString() },
+        ...prev,
+      ].slice(0, 30),
+    );
+  }, []);
 
-  const [templates, setTemplates] = useState<AIPromptTemplate[]>(() => {
-    const saved = localStorage.getItem('autosmm_templates');
-    return saved ? JSON.parse(saved) : [
-      {
-        id: '1',
-        name: 'Promo Engine',
-        category: 'Promotional',
-        systemPrompt: 'Generate a high-converting promotional post for {{business_name}} focusing on {{offer}}.',
-        imageStyle: 'Cinematic',
-        aspectRatio: '1:1',
-        usageCount: 142,
-        engagementLift: 24,
-        versions: [
-          { id: 'v1', systemPrompt: 'Initial promo version', timestamp: new Date(Date.now() - 604800000).toISOString() }
-        ]
-      },
-      {
-        id: '2',
-        name: 'Educational Tip',
-        category: 'Educational',
-        systemPrompt: 'Create an educational post for {{business_name}} about {{topic}}.',
-        imageStyle: 'Minimalist 3D',
-        aspectRatio: '1:1',
-        usageCount: 89,
-        engagementLift: 18,
-        versions: [
-          { id: 'v1', systemPrompt: 'First educational draft', timestamp: new Date(Date.now() - 1209600000).toISOString() }
-        ]
+  /** Runs an API call, turning failures into a notification instead of a crash. */
+  const guard = useCallback(
+    async <T,>(action: () => Promise<T>, successMessage?: string): Promise<T | null> => {
+      try {
+        const result = await action();
+        if (successMessage) notify(successMessage, 'success');
+        setConnection('online');
+        setConnectionError(null);
+        return result;
+      } catch (error) {
+        const message = errorMessage(error);
+        notify(message, 'error');
+        if (error instanceof ApiError && error.isOffline) {
+          setConnection('offline');
+          setConnectionError(message);
+        }
+        return null;
       }
-    ];
-  });
+    },
+    [notify],
+  );
 
+  // ---------------------------------------------------------------- theme
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     localStorage.setItem('autosmm_theme', theme);
   }, [theme]);
 
   useEffect(() => {
-    localStorage.setItem('autosmm_businesses', JSON.stringify(businesses));
-  }, [businesses]);
+    if (selectedBusinessId) localStorage.setItem('autosmm_business', selectedBusinessId);
+    else localStorage.removeItem('autosmm_business');
+  }, [selectedBusinessId]);
 
-  useEffect(() => {
-    localStorage.setItem('autosmm_posts', JSON.stringify(posts));
-  }, [posts]);
+  // ----------------------------------------------------------- data loads
+  const filtersRef = useRef(itemFilters);
+  filtersRef.current = itemFilters;
+  const businessRef = useRef(selectedBusinessId);
+  businessRef.current = selectedBusinessId;
 
-  useEffect(() => {
-    localStorage.setItem('autosmm_templates', JSON.stringify(templates));
-  }, [templates]);
+  const loadItems = useCallback(async () => {
+    const filters: ItemFilters = { limit: ITEM_PAGE_SIZE, ...filtersRef.current };
+    if (!filters.business_id && businessRef.current) filters.business_id = businessRef.current;
+    const page = await api.items.list(filters);
+    setItems(page.items);
+  }, []);
 
-  useEffect(() => {
-    localStorage.setItem('autosmm_logs', JSON.stringify(notifications));
-  }, [notifications]);
+  const loadEverything = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      try {
+        const [businessPage, summaryData, templatePage, planPage] = await Promise.all([
+          api.businesses.list({ limit: 100 }),
+          api.analytics.summary(),
+          api.prompts.list({ limit: 100 }),
+          api.plans.list({ limit: 25 }),
+        ]);
 
-  const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+        setBusinesses(businessPage.items);
+        setSummary(summaryData);
+        setTemplates(templatePage.items);
+        setPlans(planPage.items);
+        await loadItems();
 
-  const addNotification = (message: string, type: SystemLog['type']) => {
-    const newLog = { id: crypto.randomUUID(), message, type, timestamp: new Date().toISOString() };
-    setNotifications(prev => [newLog, ...prev].slice(0, 5));
-  };
-
-  const addBusiness = (b: Omit<Business, 'id'>) => {
-    const newBusiness = { ...b, id: crypto.randomUUID() };
-    setBusinesses([...businesses, newBusiness]);
-    addNotification(`Business "${b.name}" added`, 'success');
-  };
-
-  const updateBusiness = (id: string, b: Partial<Business>) => {
-    setBusinesses(businesses.map(item => item.id === id ? { ...item, ...b } : item));
-  };
-
-  const deleteBusiness = (id: string) => {
-    setBusinesses(businesses.filter(item => item.id !== id));
-    addNotification('Business deleted', 'info');
-  };
-
-  const addPost = (p: Omit<Post, 'id' | 'createdAt'>) => {
-    const newPost = { ...p, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
-    setPosts([newPost, ...posts]);
-    addNotification('New post scheduled', 'success');
-  };
-
-  const updatePost = (id: string, p: Partial<Post>) => {
-    setPosts(posts.map(item => item.id === id ? { ...item, ...p } : item));
-  };
-
-  const deletePost = (id: string) => {
-    setPosts(posts.filter(p => p.id !== id));
-    addNotification('Post deleted', 'info');
-  };
-
-  const bulkApprovePosts = (ids: string[]) => {
-    setPosts(posts.map(p => ids.includes(p.id) ? { ...p, status: 'Published' as const } : p));
-    addNotification(`${ids.length} posts approved`, 'success');
-  };
-
-  const bulkDeletePosts = (ids: string[]) => {
-    setPosts(posts.filter(p => !ids.includes(p.id)));
-    addNotification(`${ids.length} posts deleted`, 'info');
-  };
-
-  const bulkReschedulePosts = (ids: string[], date: string) => {
-    setPosts(posts.map(p => ids.includes(p.id) ? { ...p, scheduledFor: date } : p));
-    addNotification(`${ids.length} posts rescheduled`, 'info');
-  };
-
-  const addTemplate = (t: Omit<AIPromptTemplate, 'id' | 'usageCount' | 'engagementLift' | 'versions'>) => {
-    setTemplates([...templates, { 
-      ...t, 
-      id: crypto.randomUUID(),
-      usageCount: 0,
-      engagementLift: 0,
-      versions: []
-    }]);
-    addNotification('New template saved', 'success');
-  };
-
-  const updateTemplate = (id: string, t: Partial<AIPromptTemplate>) => {
-    setTemplates(templates.map(item => {
-      if (item.id === id) {
-        const updated = { ...item, ...t };
-        // If systemPrompt changed, add to versions
-        if (t.systemPrompt && t.systemPrompt !== item.systemPrompt) {
-          const newVersion = {
-            id: crypto.randomUUID(),
-            systemPrompt: item.systemPrompt,
-            timestamp: new Date().toISOString()
-          };
-          updated.versions = [newVersion, ...item.versions].slice(0, 10);
-        }
-        return updated;
+        setConnection('online');
+        setConnectionError(null);
+      } catch (error) {
+        const message = errorMessage(error);
+        setConnectionError(message);
+        setConnection(error instanceof ApiError && error.isOffline ? 'offline' : 'online');
+        if (!silent) notify(message, 'error');
+      } finally {
+        if (!silent) setLoading(false);
       }
-      return item;
-    }));
-    addNotification('Template updated', 'success');
-  };
+    },
+    [loadItems, notify],
+  );
 
-  const stats: DashboardStats = {
-    activeBusinesses: businesses.length,
-    scheduledToday: posts.filter(p => p.status === 'Pending').length,
-    autoPublished24h: posts.filter(p => p.status === 'Published').length,
-    estApiCost: businesses.length * 0.45 // Mock calculation
-  };
+  // Providers change rarely — refetch only when the connection comes back.
+  useEffect(() => {
+    if (connection === 'offline') return;
+    api.system
+      .providers()
+      .then(setProviders)
+      .catch(() => setProviders(null));
+  }, [connection]);
 
-  return (
-    <AppContext.Provider value={{ 
-      businesses, 
-      posts, 
-      templates, 
-      stats, 
+  useEffect(() => {
+    void loadEverything();
+  }, [loadEverything]);
+
+  // Re-query the queue whenever the filter or the active business changes.
+  useEffect(() => {
+    void guard(loadItems);
+  }, [itemFilters, selectedBusinessId, guard, loadItems]);
+
+  // Background refresh so generation and publishing progress show up by itself.
+  useEffect(() => {
+    if (connection === 'offline') return;
+    const timer = setInterval(() => void loadEverything(true), POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [connection, loadEverything]);
+
+  // Keep a valid selection at all times.
+  useEffect(() => {
+    if (!businesses.length) return;
+    if (!selectedBusinessId || !businesses.some((b) => b.id === selectedBusinessId)) {
+      setSelectedBusinessId(businesses[0].id);
+    }
+  }, [businesses, selectedBusinessId]);
+
+  // --------------------------------------------------------------- actions
+  const refreshAll = useCallback(async () => {
+    await loadEverything();
+  }, [loadEverything]);
+
+  const refreshItems = useCallback(async () => {
+    await guard(loadItems);
+  }, [guard, loadItems]);
+
+  const addBusiness = useCallback(
+    async (payload: BusinessCreate) => {
+      const created = await guard(() => api.businesses.create(payload), `"${payload.name}" created`);
+      if (created) {
+        setBusinesses((prev) => [created, ...prev]);
+        setSelectedBusinessId(created.id);
+        void loadEverything(true);
+      }
+      return created;
+    },
+    [guard, loadEverything],
+  );
+
+  const updateBusiness = useCallback(
+    async (id: string, payload: BusinessUpdate) => {
+      const updated = await guard(() => api.businesses.update(id, payload), 'Business updated');
+      if (updated) setBusinesses((prev) => prev.map((b) => (b.id === id ? updated : b)));
+    },
+    [guard],
+  );
+
+  const deleteBusiness = useCallback(
+    async (id: string) => {
+      const done = await guard(() => api.businesses.remove(id), 'Business deleted');
+      if (done) {
+        setBusinesses((prev) => prev.filter((b) => b.id !== id));
+        if (selectedBusinessId === id) setSelectedBusinessId(null);
+        void loadEverything(true);
+      }
+    },
+    [guard, loadEverything, selectedBusinessId],
+  );
+
+  const replaceItem = useCallback((updated: ContentItem) => {
+    setItems((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+  }, []);
+
+  const updateItem = useCallback(
+    async (id: string, payload: ContentItemUpdate) => {
+      const updated = await guard(() => api.items.update(id, payload), 'Post updated');
+      if (updated) replaceItem(updated);
+    },
+    [guard, replaceItem],
+  );
+
+  const approveItem = useCallback(
+    async (id: string) => {
+      const updated = await guard(() => api.items.approve(id), 'Approved — it will publish on schedule');
+      if (updated) replaceItem(updated);
+    },
+    [guard, replaceItem],
+  );
+
+  const rejectItem = useCallback(
+    async (id: string) => {
+      const updated = await guard(() => api.items.reject(id), 'Post rejected');
+      if (updated) replaceItem(updated);
+    },
+    [guard, replaceItem],
+  );
+
+  const deleteItem = useCallback(
+    async (id: string) => {
+      const done = await guard(() => api.items.remove(id), 'Post deleted');
+      if (done) setItems((prev) => prev.filter((item) => item.id !== id));
+    },
+    [guard],
+  );
+
+  const bulkStatus = useCallback(
+    async (ids: string[], status: ContentItemStatus) => {
+      if (!ids.length) return;
+      const result = await guard(() => api.items.bulkStatus(ids, status));
+      if (result) {
+        notify(`${result.updated} of ${result.requested} posts → ${status.replace('_', ' ')}`, 'success');
+        await guard(loadItems);
+      }
+    },
+    [guard, loadItems, notify],
+  );
+
+  const regenerateItem = useCallback(
+    async (id: string, instruction = '', withImage = false) => {
+      const task = await guard(() => api.generate.regenerate(id, instruction, withImage));
+      if (!task) return;
+      notify(task.status === 'queued' ? 'Regeneration queued' : 'Regenerated', 'success');
+      await guard(loadItems);
+    },
+    [guard, loadItems, notify],
+  );
+
+  const publishItem = useCallback(
+    async (id: string, force = false) => {
+      const task = await guard(() => api.generate.publishNow(id, force));
+      if (!task) return;
+      notify(task.message || 'Publishing…', 'info');
+      await guard(loadItems);
+    },
+    [guard, loadItems, notify],
+  );
+
+  const generatePlan = useCallback(
+    async (payload: GeneratePlanRequest) => {
+      const task = await guard(() => api.generate.plan(payload));
+      if (!task) return;
+      notify(
+        task.status === 'queued'
+          ? 'Weekly plan queued — posts appear as the agents finish'
+          : 'Generating the plan in-process…',
+        'info',
+      );
+      setTimeout(() => void loadEverything(true), 4000);
+    },
+    [guard, loadEverything, notify],
+  );
+
+  const generateItem = useCallback(
+    async (payload: GenerateItemRequest) => {
+      const task = await guard(() => api.generate.item(payload));
+      if (!task) return;
+      notify(task.status === 'queued' ? 'Post generation queued' : 'Generating the post…', 'info');
+      setTimeout(() => void loadEverything(true), 4000);
+    },
+    [guard, loadEverything, notify],
+  );
+
+  const approvePlan = useCallback(
+    async (id: string) => {
+      const result = await guard(() => api.plans.approve(id));
+      if (result) {
+        notify(`${result.approved} posts approved`, 'success');
+        await loadEverything(true);
+      }
+    },
+    [guard, loadEverything, notify],
+  );
+
+  const addTemplate = useCallback(
+    async (payload: PromptTemplateCreate) => {
+      const created = await guard(() => api.prompts.create(payload), 'Prompt saved');
+      if (created) setTemplates((prev) => [created, ...prev]);
+    },
+    [guard],
+  );
+
+  const updateTemplate = useCallback(
+    async (id: string, payload: PromptTemplateUpdate) => {
+      const updated = await guard(() => api.prompts.update(id, payload), 'Prompt updated');
+      if (updated) setTemplates((prev) => prev.map((t) => (t.id === id ? updated : t)));
+    },
+    [guard],
+  );
+
+  const rollbackTemplate = useCallback(
+    async (id: string, version: number) => {
+      const updated = await guard(() => api.prompts.rollback(id, version), `Rolled back to v${version}`);
+      if (updated) setTemplates((prev) => prev.map((t) => (t.id === id ? updated : t)));
+    },
+    [guard],
+  );
+
+  const deleteTemplate = useCallback(
+    async (id: string) => {
+      const done = await guard(() => api.prompts.remove(id), 'Prompt deleted');
+      if (done) setTemplates((prev) => prev.filter((t) => t.id !== id));
+    },
+    [guard],
+  );
+
+  const retryConnection = useCallback(() => {
+    setConnection('connecting');
+    void loadEverything();
+  }, [loadEverything]);
+
+  const value = useMemo<AppContextType>(
+    () => ({
+      connection,
+      connectionError,
+      retryConnection,
+      businesses,
+      items,
+      plans,
+      templates,
+      summary,
+      providers,
+      loading,
+      selectedBusinessId,
+      selectBusiness: setSelectedBusinessId,
+      itemFilters,
+      setItemFilters,
+      theme,
+      toggleTheme: () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark')),
+      notifications,
+      addNotification: notify,
+      refreshAll,
+      refreshItems,
+      addBusiness,
+      updateBusiness,
+      deleteBusiness,
+      updateItem,
+      approveItem,
+      rejectItem,
+      deleteItem,
+      bulkStatus,
+      regenerateItem,
+      publishItem,
+      generatePlan,
+      generateItem,
+      approvePlan,
+      addTemplate,
+      updateTemplate,
+      rollbackTemplate,
+      deleteTemplate,
+    }),
+    [
+      connection,
+      connectionError,
+      retryConnection,
+      businesses,
+      items,
+      plans,
+      templates,
+      summary,
+      providers,
+      loading,
+      selectedBusinessId,
+      itemFilters,
       theme,
       notifications,
-      apiLogs,
-      toggleTheme,
-      addNotification,
-      addBusiness, 
-      updateBusiness, 
+      notify,
+      refreshAll,
+      refreshItems,
+      addBusiness,
+      updateBusiness,
       deleteBusiness,
-      addPost,
-      updatePost,
-      deletePost,
-      bulkApprovePosts,
-      bulkDeletePosts,
-      bulkReschedulePosts,
+      updateItem,
+      approveItem,
+      rejectItem,
+      deleteItem,
+      bulkStatus,
+      regenerateItem,
+      publishItem,
+      generatePlan,
+      generateItem,
+      approvePlan,
       addTemplate,
-      updateTemplate
-    }}>
-      {children}
-    </AppContext.Provider>
+      updateTemplate,
+      rollbackTemplate,
+      deleteTemplate,
+    ],
   );
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
 export const useApp = () => {
@@ -257,3 +518,9 @@ export const useApp = () => {
   if (!context) throw new Error('useApp must be used within AppProvider');
   return context;
 };
+
+/** Convenience selector for the business currently in focus. */
+export function useSelectedBusiness(): Business | null {
+  const { businesses, selectedBusinessId } = useApp();
+  return businesses.find((b) => b.id === selectedBusinessId) ?? null;
+}

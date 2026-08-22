@@ -12,7 +12,6 @@ import {
   Settings2, 
   Terminal,
   Zap,
-  User,
   Sun,
   Moon
 } from 'lucide-react';
@@ -39,7 +38,14 @@ const navItems = [
 ];
 
 export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
-  const { theme, toggleTheme } = useApp();
+  const { theme, toggleTheme, summary, connection, providers } = useApp();
+
+  const status =
+    connection === 'offline'
+      ? { label: 'Backend offline', detail: 'Cannot reach the API', dot: 'bg-rose-500' }
+      : providers?.gemini.configured
+        ? { label: 'Agents ready', detail: providers.gemini.fast_model, dot: 'bg-emerald-500' }
+        : { label: 'Connected', detail: 'No GEMINI_API_KEY set', dot: 'bg-amber-500' };
 
   return (
     <div className="flex flex-col w-64 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-500 dark:text-slate-400 h-screen overflow-hidden">
@@ -58,7 +64,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
         </button>
       </div>
 
-      <ScrollArea className="flex-1 px-4">
+      <ScrollArea className="flex-1 min-h-0 px-4">
         <div className="space-y-1 py-2">
           {navItems.map((item) => (
             <button
@@ -79,30 +85,34 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
       </ScrollArea>
 
       <div className="mt-auto p-4 space-y-4">
-        <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800">
-          <div className="flex justify-between text-xs mb-2">
-            <span>API Credits</span>
-            <span className="text-indigo-400">84% used</span>
+        <div className="bg-slate-100/60 dark:bg-slate-900/50 rounded-lg p-4 border border-slate-200 dark:border-slate-800 space-y-2">
+          <div className="flex justify-between text-xs">
+            <span>Pending review</span>
+            <span className="text-amber-500 font-medium">{summary.pending_review}</span>
           </div>
-          <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-            <div className="bg-indigo-600 h-full w-[84%]" />
+          <div className="flex justify-between text-xs">
+            <span>Published (24h)</span>
+            <span className="text-emerald-500 font-medium">{summary.published_24h}</span>
           </div>
-          <p className="text-[10px] mt-2 text-slate-500">Resetting in 12 days</p>
+          <div className="flex justify-between text-xs">
+            <span>Est. AI spend</span>
+            <span className="text-indigo-400 font-medium">${summary.est_api_cost_usd.toFixed(2)}</span>
+          </div>
         </div>
 
-        <Separator className="bg-slate-800" />
+        <Separator className="bg-slate-200 dark:bg-slate-800" />
 
         <div className="flex items-center gap-3 px-2">
-          <Avatar className="w-8 h-8 border border-slate-800">
+          <Avatar className="w-8 h-8 border border-slate-200 dark:border-slate-800">
             <AvatarFallback className="bg-indigo-950 text-indigo-400 text-xs">AD</AvatarFallback>
           </Avatar>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-slate-200 truncate">Admin Profile</p>
-            <p className="text-xs text-slate-500 truncate">admin@autosmm.ai</p>
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">
+              {status.label}
+            </p>
+            <p className="text-xs text-slate-500 truncate">{status.detail}</p>
           </div>
-          <button className="p-1 hover:bg-slate-800 rounded-md">
-            <User className="w-4 h-4" />
-          </button>
+          <span className={cn('w-2 h-2 rounded-full shrink-0', status.dot)} />
         </div>
       </div>
     </div>

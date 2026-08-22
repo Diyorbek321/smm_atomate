@@ -1,0 +1,36 @@
+[project]
+name = "autosmm-ai"
+version = "1.0.0"
+description = "Autonomous AI SMM employee for local businesses"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [".venv", "alembic/versions", "media"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "B008",    # FastAPI Depends() in defaults is idiomatic
+    "N818",    # our exception names read better without the Error suffix rule
+    "RUF001",  # Uzbek/emoji strings contain "ambiguous" unicode on purpose
+    "RUF002",
+    "RUF003",
+    "SIM108",  # ternaries are not always clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "N806", "SIM117"]
+"app/agents/prompts.py" = ["E501"]
+"app/bot/texts.py" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+plugins = []
+exclude = "(alembic|tests|\\.venv)"

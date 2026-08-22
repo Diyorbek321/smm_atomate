@@ -1,0 +1,170 @@
+name: autosmm
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file: [.env]
+  environment:
+    POSTGRES_HOST: postgres
+    REDIS_URL: redis://redis:6379/0
+    CELERY_BROKER_URL: redis://redis:6379/1
+    CELERY_RESULT_BACKEND: redis://redis:6379/2
+    MEDIA_ROOT: /app/media
+  volumes:
+    - media:/app/media
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-autosmm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-autosmm}
+      POSTGRES_DB: ${POSTGRES_DB:-autosmm}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Override the host port when you already run Postgres locally.
+    ports: ["${POSTGRES_HOST_PORT:-5432}:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-autosmm} -d ${POSTGRES_DB:-autosmm}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    ports: ["${REDIS_HOST_PORT:-6379}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # --- Database migrations run once, before anything else starts -----------
+  migrate:
+    <<: *app
+    command: alembic upgrade head
+    restart: "no"
+    healthcheck:
+      disable: true
+
+  api:
+    <<: *app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
+    ports: ["${API_HOST_PORT:-8000}:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+
+  # --- Content generation (LLM heavy, long timeouts, low concurrency) ------
+  worker-generation:
+    <<: *app
+    command: celery -A app.tasks.celery_app worker -Q generation -c 2 -n generation@%h --loglevel=INFO
+    environment:
+      # Inherited from x-app, plus a bigger patience budget: nobody is waiting
+      # on a worker, so riding out a provider's per-minute limit is correct.
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      MEDIA_ROOT: /app/media
+      LLM_MAX_RETRY_WAIT: 120
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d generation@$$HOSTNAME | grep -q pong"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+
+  # --- Publishing (short tasks, higher concurrency) ------------------------
+  worker-publishing:
+    <<: *app
+    command: celery -A app.tasks.celery_app worker -Q publishing,default -c 4 -n publishing@%h --loglevel=INFO
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d publishing@$$HOSTNAME | grep -q pong"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+
+  # --- Scheduler: the heartbeat that triggers publishing every minute ------
+  beat:
+    <<: *app
+    command: celery -A app.tasks.celery_app beat --loglevel=INFO
+    healthcheck:
+      disable: true
+    depends_on:
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+
+  # --- Telegram approval bot (long polling) --------------------------------
+  # Opt-in: `docker compose --profile bot up -d bot`. Two pollers on one token
+  # fight for updates, and starting it rewrites that bot's command list — so it
+  # must get its own token before joining the default stack.
+  bot:
+    <<: *app
+    command: python -m app.bot.main
+    profiles: ["bot"]
+    healthcheck:
+      disable: true
+    volumes:
+      - media:/app/media
+      # Shared with `telegram-api` so the bot can read the files it downloads.
+      # Harmless when that service is not running.
+      - tgapi:/var/lib/telegram-bot-api
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+
+  # --- Optional: self-hosted Bot API server --------------------------------
+  # api.telegram.org caps bot downloads at 20 MB, which is under a single
+  # minute of phone video. Running the server locally raises that to 2 GB.
+  #
+  #   1. Get API_ID / API_HASH from https://my.telegram.org (Apps)
+  #   2. Put TELEGRAM_API_ID / TELEGRAM_API_HASH in .env
+  #   3. Set TELEGRAM_API_BASE=http://telegram-api:8081
+  #   4. docker compose --profile bot --profile localapi up -d
+  telegram-api:
+    image: aiogram/telegram-bot-api:latest
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_LOCAL: "1"
+    volumes:
+      - tgapi:/var/lib/telegram-bot-api
+    profiles: ["localapi"]
+    restart: unless-stopped
+
+  # --- Optional: Celery monitoring UI at http://localhost:5555 -------------
+  flower:
+    <<: *app
+    command: celery -A app.tasks.celery_app flower --port=5555
+    healthcheck:
+      disable: true
+    ports: ["${FLOWER_HOST_PORT:-5555}:5555"]
+    profiles: ["monitoring"]
+
+volumes:
+  pgdata:
+  redisdata:
+  media:
+  tgapi:

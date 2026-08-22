@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<style>{% include "base.css" %}
+.canvas { justify-content: flex-start; gap: 30px; }
+.head { display: flex; align-items: center; justify-content: space-between; z-index: 2; }
+.content { display: flex; flex-direction: column; justify-content: center; flex: 1; gap: 26px; }
+.title { max-width: 94%; }
+.body-text { max-width: 92%; }
+.bullets { display: flex; flex-direction: column; gap: 18px; }
+.bullet { display: flex; gap: 16px; align-items: flex-start; font-size: {{ layout.body_size }}px; line-height: 1.35; }
+.bullet .n {
+  flex: none; width: 40px; height: 40px; border-radius: 12px;
+  background: {{ colors.accent }}22; color: {{ colors.accent }};
+  display: flex; align-items: center; justify-content: center; font-weight: 700;
+}
+.swipe { display: flex; align-items: center; gap: 10px; font-weight: 600; color: {{ colors.accent }}; }
+{% if photo %}
+/* Cover slide: brand background photo behind a legibility shade. */
+.canvas { background: {{ colors.bg }}; }
+.photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.shade {
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(180deg, {{ colors.bg }}d9 0%, {{ colors.bg }}55 14%, transparent 30%),
+    linear-gradient(0deg, {{ colors.bg }}f5 0%, {{ colors.bg }}cc 26%, {{ colors.bg }}55 46%, transparent 62%);
+}
+.head, .content, .footer { position: relative; }
+.title { text-shadow: 0 2px 18px {{ colors.bg }}aa; }
+.body-text { text-shadow: 0 1px 12px {{ colors.bg }}aa; }
+{% endif %}
+</style>
+</head>
+<body>
+  <div class="canvas">
+    {% if photo %}<img class="photo" src="{{ photo }}" alt=""><div class="shade"></div>{% else %}<div class="grid-overlay"></div>{% endif %}
+    <div class="head">
+      <div class="brandbar">{% if logo %}<img class="logo" src="{{ logo }}" alt="">{% else %}<span class="dot"></span>{% endif %}<span class="name">{{ brand }}</span></div>
+      <div class="counter">{{ index }}/{{ total }}</div>
+    </div>
+    <div class="content">
+      {% if pill %}<div class="pill">{{ pill }}</div>{% endif %}
+      <div class="title">{{ title }}</div>
+      {% if body %}<div class="body-text">{{ body }}</div>{% endif %}
+      {% if bullets %}
+      <div class="bullets">
+        {% for b in bullets %}<div class="bullet"><span class="n">{{ loop.index }}</span><span>{{ b }}</span></div>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="footer">
+      <div>{{ contact }}</div>
+      {% if index < total %}<div class="swipe">Keyingisi →</div>{% elif cta %}<div class="cta">{{ cta }}</div>{% endif %}
+    </div>
+  </div>
+</body>
+</html>

@@ -14,6 +14,7 @@ import { IntegrationSettings } from './components/IntegrationSettings';
 import { SystemLogs } from './components/SystemLogs';
 import { NotificationBell } from './components/NotificationBell';
 import { CommandPalette } from './components/CommandPalette';
+import { ConnectionBanner, HeaderControls } from './components/AppChrome';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Search, Command as CommandIcon } from 'lucide-react';
@@ -86,6 +87,7 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-3">
+                <HeaderControls />
                 <NotificationBell />
                 <div className="w-px h-4 bg-slate-200 dark:bg-slate-800 mx-1" />
                 <div className="flex items-center gap-2">
@@ -96,7 +98,11 @@ export default function App() {
               </div>
             </header>
 
-            <ScrollArea className="flex-1">
+            <ConnectionBanner />
+
+            {/* min-h-0 caps the flex item at the leftover space — without it the
+                area grows with its content and the page can never scroll. */}
+            <ScrollArea className="flex-1 min-h-0">
               <div className="max-w-[1400px] mx-auto p-8 lg:p-10">
                 {renderContent()}
               </div>
