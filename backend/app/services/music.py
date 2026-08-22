@@ -12,7 +12,11 @@ from __future__ import annotations
 import array
 import math
 import random
+import struct
+import wave
+from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 SAMPLE_RATE = 44100
 
@@ -153,6 +157,27 @@ def render_bed(spec: MusicSpec) -> array.array:
         for index in range(total_samples):
             track[index] *= scale
     return track
+
+
+def write_wav(samples: Sequence[float], path: Path, *, ceiling: float = 0.89) -> Path:
+    """Write float samples as 16-bit mono PCM, scaled so nothing clips.
+
+    Everything this system synthesises — the bed here, the cue mix in
+    kinetic.py — ends up as one WAV handed to ffmpeg as a single input, which
+    is far cheaper than asking ffmpeg to mix twenty sources itself.
+    """
+    peak = max((abs(value) for value in samples), default=0.0)
+    scale = (ceiling / peak) if peak > ceiling else 1.0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames = bytearray()
+    for value in samples:
+        frames += struct.pack("<h", int(max(-1.0, min(1.0, value * scale)) * 32000))
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(SAMPLE_RATE)
+        out.writeframes(bytes(frames))
+    return path
 
 
 def snap_to_beat(seconds: float, bpm: int, *, minimum_beats: int = 2) -> float:

@@ -124,6 +124,23 @@ class Settings(BaseSettings):
     #: the resolution Instagram and TikTok actually want. Lower it to render faster.
     kinetic_scale: float = 1.5
 
+    # --- Video delivery --------------------------------------------------
+    #: What leaves this system is a master that Telegram and Instagram will
+    #: re-encode, so it is deliberately better than the file the viewer gets.
+    #: Raise the CRF or pick a faster preset to trade quality for render time.
+    video_crf: int = 18
+    video_preset: str = "slow"
+    audio_bitrate: str = "192k"
+
+    # --- Image quality per tier ------------------------------------------
+    #: Flux Schnell is a 4-step distilled model: fast, cheap and visibly
+    #: rougher. Paying clients get a real sampler, and the tier decides which
+    #: (see app/core/plans.py). Schnell has no CFG, so a negative prompt is
+    #: only sent to the models that can act on one.
+    fal_model_start: str = "fal-ai/flux/schnell"
+    fal_model_standard: str = "fal-ai/flux/dev"
+    fal_model_pro: str = "fal-ai/flux-pro/v1.1"
+
     # --- Behaviour -------------------------------------------------------
     default_timezone: str = "Asia/Tashkent"
     default_language: str = "uz"

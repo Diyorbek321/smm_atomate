@@ -17,9 +17,7 @@ import asyncio
 import contextlib
 import math
 import random
-import struct
 import tempfile
-import wave
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -29,7 +27,8 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from app.core.config import settings
 from app.core.exceptions import ConfigurationError, PublishError
 from app.core.logging import get_logger
-from app.services.music import MusicSpec, render_bed, snap_to_beat
+from app.services.encoding import audio_args, video_args
+from app.services.music import MusicSpec, render_bed, snap_to_beat, write_wav
 from app.services.storage import StoredFile, get_storage
 from app.services.video import ffmpeg_path
 
@@ -277,18 +276,7 @@ def mix_soundtrack(
                 break
             buffer[index] += sample * gain
 
-    peak = max((abs(v) for v in buffer), default=0.0)
-    scale = (0.89 / peak) if peak > 0.89 else 1.0
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as out:
-        out.setnchannels(1)
-        out.setsampwidth(2)
-        out.setframerate(SAMPLE_RATE)
-        frames = bytearray()
-        for value in buffer:
-            frames += struct.pack("<h", int(max(-1.0, min(1.0, value * scale)) * 32000))
-        out.writeframes(bytes(frames))
-    return path
+    return write_wav(buffer, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -1258,7 +1246,12 @@ def _cues_for(
 
 
 async def render_kinetic(
-    spec: KineticSpec, *, prefix: str = "kinetic", crf: int = 20
+    spec: KineticSpec,
+    *,
+    prefix: str = "kinetic",
+    crf: int = 19,
+    maxrate: str = "12M",
+    bufsize: str = "24M",
 ) -> KineticResult:
     """Render every scene to frames, assemble with ffmpeg, mix SFX and music.
 
@@ -1293,11 +1286,14 @@ async def render_kinetic(
             cover_at = int(frames * 0.92)
             for i in range(frames):
                 image = renderer.frame(i / frames, i)
-                image.save(tmp_path / f"f{frame_no:05d}.jpg", quality=90)
+                # subsampling=0 keeps 4:4:4 chroma. The default 4:2:0 halves
+                # colour resolution, and gold text on charcoal is exactly the
+                # case where that shows as fringing — before x264 even runs.
+                image.save(tmp_path / f"f{frame_no:05d}.jpg", quality=96, subsampling=0)
                 if index == 0 and i == cover_at:
                     # The hook, fully assembled: the frame a feed should show.
                     buffer = BytesIO()
-                    image.save(buffer, format="JPEG", quality=90)
+                    image.save(buffer, format="JPEG", quality=95, subsampling=0)
                     cover = buffer.getvalue()
                 frame_no += 1
             clock += frames / FPS
@@ -1326,8 +1322,8 @@ async def render_kinetic(
         command += [
             "-map", "0:v", *audio_map,
             "-t", f"{clock:.2f}",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", str(crf), "-preset", "medium",
-            "-c:a", "aac", "-b:a", "160k",
+            *video_args(crf=crf, fps=FPS, maxrate=maxrate, bufsize=bufsize),
+            *audio_args(),
             "-movflags", "+faststart",
             str(out_path),
         ]
@@ -1379,7 +1375,7 @@ async def mix_voiceover(video: Path, voice: Path, *, prefix: str = "kinetic-vo")
             binary, "-y", "-i", str(video), "-i", str(voice),
             "-filter_complex", filter_complex,
             "-map", "0:v", "-map", "[aud]",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+            "-c:v", "copy", *audio_args(),
             "-movflags", "+faststart", str(out_path),
         ]
         process = await asyncio.create_subprocess_exec(

@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
+from app.core.config import settings
 from app.models.enums import ContentPillar, ContentType, Plan
 
 #: Capabilities that can be overridden per business (booleans only).
@@ -29,6 +30,10 @@ class PlanCapabilities:
     video_editing: bool   # polishing footage the client shot themselves
     ai_video: bool        # paid generative video (fal.ai) — costs money per clip
     lead_autoreply: bool
+    #: Which text-to-image model renders this tier's photos. The cheapest one
+    #: is a 4-step distilled model — fine for a trial, visibly rough for a
+    #: client whose feed this becomes. The price gap is a couple of cents.
+    image_model: str = ""
 
     def allows(self, content_type: ContentType) -> bool:
         return content_type in self.content_types
@@ -43,6 +48,7 @@ PLAN_CAPABILITIES: dict[Plan, PlanCapabilities] = {
         video_editing=False,
         ai_video=False,
         lead_autoreply=False,
+        image_model=settings.fal_model_start,
     ),
     Plan.STANDARD: PlanCapabilities(
         max_posts_per_week=8,
@@ -60,6 +66,7 @@ PLAN_CAPABILITIES: dict[Plan, PlanCapabilities] = {
         video_editing=True,
         ai_video=False,
         lead_autoreply=False,
+        image_model=settings.fal_model_standard,
     ),
     Plan.PRO: PlanCapabilities(
         max_posts_per_week=20,
@@ -69,6 +76,7 @@ PLAN_CAPABILITIES: dict[Plan, PlanCapabilities] = {
         video_editing=True,
         ai_video=True,
         lead_autoreply=True,
+        image_model=settings.fal_model_pro,
     ),
 }
 

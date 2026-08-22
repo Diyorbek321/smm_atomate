@@ -22,6 +22,13 @@ log = get_logger(__name__)
 
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 
+#: Cards are rendered at twice the delivery size and scaled back down.
+#: Chromium rasterises type with grayscale antialiasing at 1x; supersampling
+#: gives every glyph edge four samples instead of one, which is the difference
+#: between "readable" and "printed" on a phone held at arm's length. The cost
+#: is one extra Lanczos pass — milliseconds.
+SUPERSAMPLE = 2
+
 #: Canvas sizes per format.
 CANVAS = {
     "story": (1080, 1920),
@@ -116,7 +123,16 @@ class HtmlRenderer:
             playwright = await async_playwright().start()
             try:
                 self._browser = await playwright.chromium.launch(
-                    args=["--no-sandbox", "--disable-dev-shm-usage", "--font-render-hinting=none"]
+                    args=[
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--font-render-hinting=none",
+                        # Chromium antialiases text for an LCD's subpixel layout
+                        # by default, which paints coloured fringes along every
+                        # glyph. Harmless on the monitor it was tuned for, and
+                        # visible as colour noise in an exported image.
+                        "--disable-lcd-text",
+                    ]
                 )
             except Exception:
                 # Stop the driver process, otherwise a failed launch leaks it.
@@ -133,15 +149,19 @@ class HtmlRenderer:
             return _pillow_card(request)
         try:
             browser = await self._browser_instance()
+            # The viewport stays at CSS size so the layout is unchanged; only
+            # the raster is doubled.
             page = await browser.new_page(
-                viewport={"width": request.width, "height": request.height}, device_scale_factor=1
+                viewport={"width": request.width, "height": request.height},
+                device_scale_factor=SUPERSAMPLE,
             )
             try:
                 await page.set_content(html, wait_until="load", timeout=20_000)
                 await page.wait_for_timeout(120)  # let webfonts settle
-                return await page.screenshot(type="png")
+                shot = await page.screenshot(type="png")
             finally:
                 await page.close()
+            return _downsample(shot, request.width, request.height)
         except Exception as exc:
             log.error("renderer_failed_fallback_pillow", error=str(exc)[:300])
             self._unavailable = True
@@ -160,6 +180,27 @@ class HtmlRenderer:
                 await self._playwright.stop()
                 self._playwright = None
             self._loop = None
+
+
+def _downsample(png: bytes, width: int, height: int) -> bytes:
+    """Scale the supersampled shot back to delivery size with Lanczos."""
+    import io
+
+    from PIL import Image
+
+    try:
+        image = Image.open(io.BytesIO(png))
+        if image.size == (width, height):
+            return png
+        image = image.convert("RGB").resize((width, height), Image.LANCZOS)
+    except Exception as exc:  # a card that renders beats a card that is sharp
+        log.warning("renderer_downsample_failed", error=str(exc)[:200])
+        return png
+    buffer = io.BytesIO()
+    # `optimize=True` costs ~600 ms per card here and saves 20 KB. On a
+    # ten-slide carousel that is six seconds bought for nothing.
+    image.save(buffer, format="PNG", compress_level=6)
+    return buffer.getvalue()
 
 
 def _pillow_card(request: RenderRequest) -> bytes:

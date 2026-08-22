@@ -1,0 +1,204 @@
+"""What leaves the system has to survive the platform's own re-encode.
+
+These lock in the decisions that are invisible in a code review but obvious on
+a phone: colour tags, a bitrate ceiling, a soundtrack, a smooth zoom, and the
+sampler each tier pays for.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import wave
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+from app.core.plans import PLAN_CAPABILITIES
+from app.models.enums import Plan
+from app.services import encoding, video
+from app.services.image_gen import DEFAULT_NEGATIVE, model_params, with_constraints
+from app.services.music import MusicSpec, render_bed, write_wav
+from app.services.renderer import SUPERSAMPLE, _downsample
+
+
+class TestDeliveryEncoding:
+    def test_colour_is_tagged_bt709(self):
+        """An untagged stream is guessed at as BT.601 and arrives washed out."""
+        args = encoding.video_args()
+        for flag in ("-colorspace", "-color_primaries", "-color_trc"):
+            assert args[args.index(flag) + 1] == "bt709"
+        assert args[args.index("-color_range") + 1] == "tv"
+
+    def test_a_keyframe_every_two_seconds(self):
+        args = encoding.video_args(fps=30)
+        assert args[args.index("-g") + 1] == "60"
+
+    def test_bitrate_is_capped_so_a_clip_stays_sendable(self):
+        args = encoding.video_args(maxrate="5M", bufsize="10M")
+        assert args[args.index("-maxrate") + 1] == "5M"
+        assert args[args.index("-bufsize") + 1] == "10M"
+
+    def test_intermediates_are_near_lossless_and_uncapped(self):
+        """Three encodes stack their losses; only the last one is delivery."""
+        args = encoding.intermediate_video_args()
+        assert int(args[args.index("-crf") + 1]) == encoding.INTERMEDIATE_CRF
+        assert "-maxrate" not in args
+        assert int(args[args.index("-crf") + 1]) < encoding.settings.video_crf
+
+    def test_audio_is_stereo_48k(self):
+        args = encoding.audio_args()
+        assert args[args.index("-ar") + 1] == "48000"
+        assert args[args.index("-ac") + 1] == "2"
+
+
+class TestClipSoundtrack:
+    """A promo that plays silent reads as unfinished."""
+
+    def test_bed_is_written_for_the_clip_length(self, tmp_path):
+        path = video.write_music_bed(tmp_path / "bed.wav", 4.0)
+        assert path is not None
+        with wave.open(str(path)) as handle:
+            assert handle.getnchannels() == 1
+            assert handle.getframerate() == 44100
+            assert handle.getnframes() / handle.getframerate() == pytest.approx(4.0, abs=0.6)
+
+    def test_a_failed_synth_never_fails_the_render(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(video, "render_bed", lambda *a, **k: 1 / 0)
+        assert video.write_music_bed(tmp_path / "bed.wav", 4.0) is None
+
+    def test_write_wav_scales_a_hot_signal_down(self, tmp_path):
+        write_wav([2.0, -2.0, 0.0], tmp_path / "loud.wav", ceiling=0.5)
+        with wave.open(str(tmp_path / "loud.wav")) as handle:
+            frames = handle.readframes(handle.getnframes())
+        peak = max(abs(int.from_bytes(frames[i : i + 2], "little", signed=True)) for i in (0, 2, 4))
+        assert peak <= int(0.5 * 32000) + 1
+
+    def test_the_bed_fades_out_instead_of_stopping_mid_note(self):
+        bed = render_bed(MusicSpec(seconds=3.0))
+        tail = bed[int(2.95 * 44100) : int(3.0 * 44100)]
+        assert max(abs(value) for value in tail) < 0.05
+
+
+class TestClipCommand:
+    """The ffmpeg command is the product here, so assert on the command."""
+
+    @staticmethod
+    def _capture(monkeypatch) -> list[list[str]]:
+        seen: list[list[str]] = []
+
+        class _Process:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        async def fake_exec(*command, **kwargs):
+            seen.append(list(command))
+            return _Process()
+
+        monkeypatch.setattr(video.asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(video, "ffmpeg_path", lambda: "/usr/bin/ffmpeg")
+        return seen
+
+    def test_the_zoom_runs_above_delivery_resolution(self, monkeypatch, tmp_path):
+        """zoompan steps in whole input pixels; a 1x input jerks visibly."""
+        seen = self._capture(monkeypatch)
+        target = tmp_path / "out.mp4"
+        target.write_bytes(b"")
+        monkeypatch.setattr(Path, "read_bytes", lambda self: b"clip")
+        asyncio.run(video.render_clip(tmp_path / "bg.jpg", b"png", duration=4))
+        chain = seen[0][seen[0].index("-filter_complex") + 1]
+        assert f"scale={video.WIDTH * video.ZOOM_SUPERSAMPLE}" in chain
+        assert video.ZOOM_SUPERSAMPLE >= 2
+
+    def test_the_clip_carries_audio(self, monkeypatch, tmp_path):
+        seen = self._capture(monkeypatch)
+        monkeypatch.setattr(Path, "read_bytes", lambda self: b"clip")
+        asyncio.run(video.render_clip(tmp_path / "bg.jpg", b"png", duration=4))
+        command = seen[0]
+        assert "-map" in command and "2:a" in command
+        assert "aac" in command
+
+    def test_music_can_be_turned_off(self, monkeypatch, tmp_path):
+        seen = self._capture(monkeypatch)
+        monkeypatch.setattr(Path, "read_bytes", lambda self: b"clip")
+        asyncio.run(video.render_clip(tmp_path / "bg.jpg", b"png", duration=4, music=False))
+        assert "aac" not in seen[0]
+
+
+class TestProbeClip:
+    SAMPLE = (
+        "  Duration: 00:00:12.40, start: 0.000000, bitrate: 2371 kb/s\n"
+        "  Stream #0:0[0x1](und): Video: h264 (High), yuv420p, 1080x1920, 30 fps\n"
+        "  Stream #0:1[0x2](und): Audio: aac (LC), 48000 Hz, stereo\n"
+    )
+
+    def test_reads_duration_and_audio(self):
+        assert video._DURATION_RE.search(self.SAMPLE)
+        hours, minutes, seconds = video._DURATION_RE.search(self.SAMPLE).groups()
+        assert int(hours) * 3600 + int(minutes) * 60 + float(seconds) == pytest.approx(12.40)
+        assert bool(video._AUDIO_RE.search(self.SAMPLE)) is True
+
+    def test_silent_clip_is_detected(self):
+        assert video._AUDIO_RE.search(self.SAMPLE.replace("Audio: aac", "Data: bin")) is None
+
+
+class TestImageQualityPerTier:
+    def test_each_tier_gets_its_own_sampler(self):
+        models = {plan: PLAN_CAPABILITIES[plan].image_model for plan in Plan}
+        assert "schnell" in models[Plan.START]
+        assert models[Plan.STANDARD] != models[Plan.START]
+        assert models[Plan.PRO] != models[Plan.STANDARD]
+
+    def test_the_cheap_model_is_the_four_step_one(self):
+        assert model_params("fal-ai/flux/schnell")["num_inference_steps"] == 4
+
+    def test_a_paying_tier_gets_a_full_sampler(self):
+        assert model_params(PLAN_CAPABILITIES[Plan.STANDARD].image_model)["num_inference_steps"] > 20
+
+    def test_an_unknown_model_is_assumed_to_be_a_good_one(self):
+        assert model_params("fal-ai/some-new-model")["num_inference_steps"] > 20
+
+    def test_png_is_requested_rather_than_the_default_jpeg(self):
+        for model in ("fal-ai/flux/schnell", "fal-ai/flux/dev", "fal-ai/flux-pro/v1.1"):
+            assert model_params(model)["output_format"] == "png"
+
+
+class TestPromptConstraints:
+    """Flux has no negative conditioning — the ban has to be in the prompt."""
+
+    def test_the_ban_reaches_the_prompt(self):
+        prompt = with_constraints("a classroom", DEFAULT_NEGATIVE)
+        assert "no text" in prompt.lower()
+        assert prompt.startswith("a classroom")
+
+    def test_the_list_stays_short_because_naming_things_summons_them(self):
+        prompt = with_constraints("a classroom", ",".join(f"thing{i}" for i in range(20)))
+        assert prompt.count("thing") == 6
+
+    def test_nothing_is_appended_without_a_ban(self):
+        assert with_constraints("a classroom", "") == "a classroom"
+        assert with_constraints("a classroom", None) == "a classroom"
+
+
+class TestCardSupersampling:
+    def test_a_doubled_shot_comes_back_at_delivery_size(self):
+        big = Image.new("RGB", (2160, 2700), "#141414")
+        buffer = io.BytesIO()
+        big.save(buffer, format="PNG")
+        result = Image.open(io.BytesIO(_downsample(buffer.getvalue(), 1080, 1350)))
+        assert result.size == (1080, 1350)
+
+    def test_a_correctly_sized_shot_is_left_alone(self):
+        exact = Image.new("RGB", (1080, 1350), "#141414")
+        buffer = io.BytesIO()
+        exact.save(buffer, format="PNG")
+        assert _downsample(buffer.getvalue(), 1080, 1350) == buffer.getvalue()
+
+    def test_a_broken_shot_still_returns_something_publishable(self):
+        assert _downsample(b"not a png", 1080, 1350) == b"not a png"
+
+    def test_supersampling_is_actually_on(self):
+        assert SUPERSAMPLE >= 2

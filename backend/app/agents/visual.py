@@ -187,6 +187,9 @@ class VisualAgent(BaseAgent):
                     brief.image_prompt,
                     aspect_ratio=RATIO_BY_TYPE[request.content_type],
                     negative_prompt=brief.negative_prompt or DEFAULT_NEGATIVE,
+                    # The tier decides the sampler: a trial account can live
+                    # with a 4-step render, a paying feed cannot.
+                    model=request.business.capabilities.image_model or None,
                 )
                 output.image_url = image.url
                 output.rendered_with = "flux"

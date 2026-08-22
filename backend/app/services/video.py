@@ -9,6 +9,7 @@ photo card instead.
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.core.exceptions import ConfigurationError, PublishError
 from app.core.logging import get_logger
+from app.services.encoding import audio_args, video_args
+from app.services.music import MusicSpec, render_bed, write_wav
 from app.services.storage import StoredFile, get_storage
 
 log = get_logger(__name__)
@@ -28,6 +31,14 @@ WIDTH, HEIGHT = 1080, 1920                  # story/reels canvas
 DEFAULT_DURATION_SEC = 8
 FPS = 30
 LOGO_SIZE = 200
+
+#: `zoompan` advances its crop window in whole pixels of its *input*, so a slow
+#: zoom over a 1080-wide frame moves in visible jerks. Feeding it an oversized
+#: image and letting it scale back down to the delivery size makes each step a
+#: third of a delivery pixel — the same reason an editor works above final res.
+ZOOM_SUPERSAMPLE = 3
+ZOOM_STEP = 0.0007
+ZOOM_MAX = 1.16
 
 _BOLD_FONTS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -152,8 +163,23 @@ def build_overlay(brief: ClipBrief, colors: dict[str, str], logo: bytes | None =
     return buffer.getvalue()
 
 
+def write_music_bed(path: Path, duration: float, *, energy: str = "calm") -> Path | None:
+    """Synthesise the bed for a clip; None when synthesis fails.
+
+    A promo that plays silent reads as unfinished — on Telegram and Instagram
+    the viewer sees a mute icon and scrolls. The bed costs nothing and never
+    blocks the render: a failure just leaves the clip as it was.
+    """
+    try:
+        bed = render_bed(MusicSpec(seconds=duration, energy=energy))
+        return write_wav(bed, path)
+    except Exception as exc:  # synthesis is pure Python; never fail a render for it
+        log.warning("clip_music_failed", error=str(exc)[:200])
+        return None
+
+
 async def render_clip(
-    background: Path, overlay_png: bytes, *, duration: int = DEFAULT_DURATION_SEC
+    background: Path, overlay_png: bytes, *, duration: int = DEFAULT_DURATION_SEC, music: bool = True
 ) -> bytes:
     """Ken Burns zoom over the background with the overlay fading in."""
     binary = ffmpeg_path()
@@ -161,10 +187,11 @@ async def render_clip(
         raise ConfigurationError("ffmpeg is not installed — video rendering unavailable")
 
     frames = duration * FPS
+    zoom_w, zoom_h = WIDTH * ZOOM_SUPERSAMPLE, HEIGHT * ZOOM_SUPERSAMPLE
     filter_complex = (
-        f"[0:v]scale={int(WIDTH * 1.2)}:{HEIGHT}:force_original_aspect_ratio=increase,"
-        f"crop={WIDTH}:{HEIGHT},"
-        f"zoompan=z='min(zoom+0.0007,1.16)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        f"[0:v]scale={zoom_w}:{zoom_h}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={zoom_w}:{zoom_h},"
+        f"zoompan=z='min(zoom+{ZOOM_STEP},{ZOOM_MAX})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
         f":d={frames}:s={WIDTH}x{HEIGHT}:fps={FPS}[bgv];"
         "[1:v]format=rgba,fade=t=in:st=0.9:d=1.1:alpha=1[ov];"
         f"[bgv][ov]overlay=0:0,format=yuv420p,"
@@ -175,13 +202,22 @@ async def render_clip(
         overlay_path = Path(tmp) / "overlay.png"
         overlay_path.write_bytes(overlay_png)
         out_path = Path(tmp) / "clip.mp4"
+        bed = write_music_bed(Path(tmp) / "bed.wav", duration) if music else None
         command = [
             binary, "-y",
             "-loop", "1", "-i", str(background),
             "-loop", "1", "-i", str(overlay_path),
+        ]
+        if bed is not None:
+            command += ["-i", str(bed)]
+        command += [
             "-filter_complex", filter_complex,
-            "-map", "[v]", "-t", str(duration), "-r", str(FPS),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20",
+            "-map", "[v]",
+        ]
+        command += ["-map", "2:a", *audio_args()] if bed is not None else []
+        command += [
+            "-t", str(duration), "-r", str(FPS),
+            *video_args(fps=FPS),
             "-movflags", "+faststart",
             str(out_path),
         ]
@@ -192,6 +228,32 @@ async def render_clip(
         if process.returncode != 0:
             raise PublishError("ffmpeg", f"video render failed: {stderr[-400:].decode(errors='replace')}")
         return out_path.read_bytes()
+
+
+#: `ffmpeg -i` is used instead of ffprobe on purpose: the static build in this
+#: image segfaults. video_editor.parse_media_info reads the same output in more
+#: detail; this module only needs the two facts, and importing upwards would
+#: make the dependency circular.
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)")
+_AUDIO_RE = re.compile(r"Stream #\d+:\d+.*?: Audio:")
+
+
+async def probe_clip(path: Path) -> tuple[float, bool]:
+    """Return (duration in seconds, whether the file carries an audio track)."""
+    binary = ffmpeg_path()
+    if binary is None:
+        return 0.0, False
+    process = await asyncio.create_subprocess_exec(
+        binary, "-hide_banner", "-i", str(path),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+    text = stderr.decode(errors="replace")
+    duration = 0.0
+    if match := _DURATION_RE.search(text):
+        hours, minutes, seconds = match.groups()
+        duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    return duration, bool(_AUDIO_RE.search(text))
 
 
 async def overlay_on_video(video: Path, overlay_png: bytes) -> bytes:
@@ -206,17 +268,36 @@ async def overlay_on_video(video: Path, overlay_png: bytes) -> bytes:
         "[1:v]format=rgba,fade=t=in:st=0.9:d=1.1:alpha=1[ov];"
         "[bgv][ov]overlay=0:0:shortest=1,format=yuv420p[v]"
     )
+    # Generative clips come back silent, so the brand pass is also where the
+    # bed is laid; a clip that arrived with its own sound keeps it.
+    duration, has_audio = await probe_clip(video)
     with tempfile.TemporaryDirectory() as tmp:
         overlay_path = Path(tmp) / "overlay.png"
         overlay_path.write_bytes(overlay_png)
         out_path = Path(tmp) / "clip.mp4"
+        bed = (
+            write_music_bed(Path(tmp) / "bed.wav", duration)
+            if not has_audio and duration > 0
+            else None
+        )
         command = [
             binary, "-y",
             "-i", str(video),
             "-loop", "1", "-i", str(overlay_path),
+        ]
+        if bed is not None:
+            command += ["-i", str(bed)]
+        command += [
             "-filter_complex", filter_complex,
-            "-map", "[v]", "-r", str(FPS),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20",
+            "-map", "[v]",
+        ]
+        if has_audio:
+            command += ["-map", "0:a", *audio_args()]
+        elif bed is not None:
+            command += ["-map", "2:a", "-shortest", *audio_args()]
+        command += [
+            "-r", str(FPS),
+            *video_args(fps=FPS),
             "-movflags", "+faststart",
             str(out_path),
         ]

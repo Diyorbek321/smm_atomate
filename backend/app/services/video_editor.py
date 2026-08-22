@@ -23,6 +23,7 @@ from pathlib import Path
 
 from app.core.exceptions import ConfigurationError, ProviderError, PublishError
 from app.core.logging import get_logger
+from app.services.encoding import audio_args, intermediate_video_args, video_args
 from app.services.video import ffmpeg_path
 
 log = get_logger(__name__)
@@ -439,8 +440,8 @@ async def normalise(
         command += ["-f", "lavfi", "-i", f"anullsrc=r={AUDIO_RATE}:cl=stereo", "-shortest"]
 
     command += [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-        "-c:a", "aac", "-b:a", "160k", "-ar", str(AUDIO_RATE), "-ac", "2",
+        *intermediate_video_args(fps=FPS),
+        *audio_args(rate=AUDIO_RATE),
         "-movflags", "+faststart", str(target),
     ]
     await _run(command, stage="normalise")
@@ -453,7 +454,7 @@ async def burn_subtitles(source: Path, target: Path, ass_path: Path) -> None:
         [
             _binary(), "-y", "-hide_banner", "-i", str(source),
             "-vf", f"subtitles='{escaped}'",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            *intermediate_video_args(fps=FPS),
             "-c:a", "copy", "-movflags", "+faststart", str(target),
         ],
         stage="subtitles",
@@ -478,7 +479,7 @@ async def add_music(source: Path, target: Path, music: Path, *, speech: bool) ->
             "-i", str(source), "-stream_loop", "-1", "-i", str(music),
             "-filter_complex", graph,
             "-map", "0:v", "-map", "[a]", "-shortest",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", str(target),
+            "-c:v", "copy", *audio_args(rate=AUDIO_RATE), str(target),
         ],
         stage="music",
     )
@@ -540,8 +541,8 @@ async def add_brand_frames(
     command += [
         "-filter_complex", ";".join(parts),
         "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-        "-c:a", "aac", "-b:a", "160k", "-ar", str(AUDIO_RATE),
+        *video_args(fps=FPS),
+        *audio_args(rate=AUDIO_RATE),
         "-movflags", "+faststart", str(target),
     ]
     await _run(command, stage="brand_frames")

@@ -89,10 +89,13 @@ MUHIM: bu klip ustiga keyin ovoz yoziladi — matnlar ovoz bilan takrorlanadigan
 uzun jumlalar emas, qisqa va zarbdor sarlavhalar bo'lsin.
 """.strip()
 
-#: Encoder quality per length — a minute at CRF 20 would push 40 MB.
-#: 1080p needs a slightly higher CRF than 720p for the same perceived
-#: quality; without it a 25s clip lands north of 20 MB.
-CRF_BY_LENGTH = {"short": 22, "long": 24}
+#: Kinetic typography is the worst case for compression: hard type edges on
+#: flat fields, where a high CRF shows as mosquito noise around every letter.
+#: These sit well below the old 22/24 because the platform will re-encode on
+#: top of ours. The bitrate ceiling is what keeps a long clip inside the
+#: Telegram bot limit — 5 Mbit/s caps a minute at roughly 37 MB.
+CRF_BY_LENGTH = {"short": 19, "long": 21}
+RATE_BY_LENGTH = {"short": ("12M", "24M"), "long": ("5M", "10M")}
 
 
 class KineticSceneSpec(BaseModel):
@@ -200,7 +203,10 @@ class KineticAgent(BaseAgent):
         )
         total = sum(scene.duration for scene in scenes)
         log.info("kinetic_script_ready", length=length, scenes=len(scenes), seconds=round(total, 1))
-        return await render_kinetic(spec, crf=CRF_BY_LENGTH[length])
+        maxrate, bufsize = RATE_BY_LENGTH[length]
+        return await render_kinetic(
+            spec, crf=CRF_BY_LENGTH[length], maxrate=maxrate, bufsize=bufsize
+        )
 
     # ------------------------------------------------------------------ #
     @staticmethod
