@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from app.core.plans import PLAN_CAPABILITIES
@@ -121,13 +123,6 @@ class TestSubtitles:
     def test_a_missing_end_time_still_shows(self):
         ass = ve.build_ass([{"start": 2.0, "end": 0.0, "text": "salom"}], {})
         assert "0:00:02.00,0:00:03.40" in ass
-
-    def test_long_lines_wrap_to_two(self):
-        wrapped = ve.wrap_caption("bir ikki uch to'rt besh olti yetti sakkiz to'qqiz o'n")
-        assert wrapped.count("\\N") == 1
-
-    def test_short_lines_are_left_alone(self):
-        assert ve.wrap_caption("qisqa matn") == "qisqa matn"
 
     def test_timestamps_are_ass_formatted(self):
         assert ve._ass_time(3661.5) == "1:01:01.50"
@@ -339,3 +334,135 @@ class TestBotSessionTimeout:
         assert session.api.base.startswith("http://telegram-api:8081")
         assert session.api.is_local is True
         assert session.timeout >= 600
+
+
+class TestWordTimings:
+    """Whisper returns a flat word list; it has to land on the right segment."""
+
+    SEGMENTS: ClassVar[list[dict]] = [
+        {"start": 0.0, "end": 2.0, "text": "salom bugun"},
+        {"start": 2.0, "end": 4.0, "text": "yaxshimisiz"},
+    ]
+
+    def test_words_land_on_the_segment_that_contains_them(self):
+        from app.services.transcription import attach_words
+
+        segments = [dict(s) for s in self.SEGMENTS]
+        placed = attach_words(
+            segments,
+            [
+                {"word": "salom", "start": 0.1, "end": 0.6},
+                {"word": "bugun", "start": 0.7, "end": 1.4},
+                {"word": "yaxshimisiz", "start": 2.2, "end": 3.1},
+            ],
+        )
+        assert placed == 3
+        assert [w["word"] for w in segments[0]["words"]] == ["salom", "bugun"]
+        assert [w["word"] for w in segments[1]["words"]] == ["yaxshimisiz"]
+
+    def test_a_word_outside_every_segment_is_dropped_not_misplaced(self):
+        from app.services.transcription import attach_words
+
+        segments = [dict(s) for s in self.SEGMENTS]
+        assert attach_words(segments, [{"word": "keyin", "start": 9.0, "end": 9.4}]) == 0
+
+    def test_no_words_is_not_an_error(self):
+        from app.services.transcription import attach_words
+
+        assert attach_words([dict(s) for s in self.SEGMENTS], []) == 0
+
+
+class TestKaraokeCaptions:
+    """Each word turns brand-coloured as it is spoken."""
+
+    WORDS = "salom bugun sizga backend dasturlash haqida gapiraman".split()
+
+    def _segment(self, *, timed: bool = True) -> dict:
+        segment = {"start": 0.0, "end": 3.5, "text": " ".join(self.WORDS)}
+        if timed:
+            segment["words"] = [
+                {"word": word, "start": 0.5 * i, "end": 0.5 * i + 0.4}
+                for i, word in enumerate(self.WORDS)
+            ]
+        return segment
+
+    @staticmethod
+    def _dialogue(ass: str) -> list[str]:
+        return [line for line in ass.splitlines() if line.startswith("Dialogue")]
+
+    def test_one_cue_per_spoken_word(self):
+        ass = ve.build_ass([self._segment()], {"accent": "#C9A227"})
+        assert len(self._dialogue(ass)) == len(self.WORDS)
+
+    def test_only_the_spoken_word_wears_the_accent(self):
+        first = self._dialogue(ve.build_ass([self._segment()], {"accent": "#C9A227"}))[0]
+        # ASS reverses the channel order: C9A227 -> 27A2C9.
+        assert first.count("&H27A2C9&") == 1
+        assert "{\\c&H27A2C9&}salom{\\c&HFFFFFF&}" in first
+
+    def test_the_highlight_moves_forward(self):
+        cues = self._dialogue(ve.build_ass([self._segment()], {"accent": "#C9A227"}))
+        assert "}salom{" in cues[0]
+        assert "}bugun{" in cues[1]
+
+    def test_cues_are_continuous_so_the_caption_never_blinks(self):
+        cues = self._dialogue(ve.build_ass([self._segment()], {"accent": "#C9A227"}))
+        ends = [line.split(",")[2] for line in cues]
+        starts = [line.split(",")[1] for line in cues]
+        assert ends[:-1] == starts[1:]
+
+    def test_karaoke_can_be_turned_off(self):
+        ass = ve.build_ass([self._segment()], {"accent": "#C9A227"}, karaoke=False)
+        assert len(self._dialogue(ass)) < len(self.WORDS)
+        assert "&H27A2C9&" not in ass
+
+    def test_untimed_speech_is_shown_without_a_highlight(self):
+        """A highlight on the wrong word is worse than no highlight."""
+        ass = ve.build_ass([self._segment(timed=False)], {"accent": "#C9A227"})
+        assert "&H27A2C9&" not in ass
+        assert self._dialogue(ass)
+
+    def test_a_corrected_transcript_that_no_longer_matches_loses_the_highlight(self):
+        segment = self._segment()
+        segment["text"] = "salom bugun"          # proof-reading merged words
+        ass = ve.build_ass([segment], {"accent": "#C9A227"})
+        assert "&H27A2C9&" not in ass
+
+    def test_the_caption_shows_the_corrected_spelling_not_whisper_s(self):
+        segment = self._segment()
+        segment["text"] = segment["text"].replace("salom", "assalom")
+        ass = ve.build_ass([segment], {"accent": "#C9A227"})
+        assert "assalom" in ass
+
+    def test_a_long_sentence_keeps_every_word(self):
+        """The old two-line clamp silently threw the tail of a sentence away."""
+        ass = ve.build_ass([self._segment()], {"accent": "#C9A227"})
+        for word in self.WORDS:
+            assert word in ass
+
+    def test_braces_in_speech_cannot_open_an_override_block(self):
+        """The colour name may survive as inert text; the braces may not."""
+        segment = {"start": 0.0, "end": 1.0, "text": "{\\c&HFF0000&}qizil"}
+        cue = ve.build_ass([segment], {"accent": "#C9A227"}).splitlines()[-1]
+        assert cue.startswith("Dialogue")
+        assert "{" not in cue.split(",,", 1)[1]
+
+
+class TestCaptionLayout:
+    #: A deterministic stand-in for the font metrics: one unit per character.
+    MEASURE = staticmethod(len)
+
+    def test_words_wrap_into_two_line_chunks(self):
+        words = [{"word": "salom", "start": i, "end": i + 0.4} for i in range(12)]
+        chunks = ve.layout_words(words, box=12, max_lines=2, measure=self.MEASURE)
+        assert len(chunks) > 1
+        assert all(len(chunk) <= 2 for chunk in chunks)
+
+    def test_every_word_survives_the_layout(self):
+        words = [{"word": f"w{i}", "start": i, "end": i + 0.4} for i in range(20)]
+        laid_out = [w for chunk in ve.layout_words(words) for line in chunk for w in line]
+        assert len(laid_out) == 20
+
+    def test_blank_tokens_are_skipped(self):
+        words = [{"word": " ", "start": 0, "end": 1}, {"word": "salom", "start": 1, "end": 2}]
+        assert sum(len(line) for chunk in ve.layout_words(words) for line in chunk) == 1

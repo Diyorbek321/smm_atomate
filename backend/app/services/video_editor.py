@@ -18,8 +18,10 @@ from __future__ import annotations
 import asyncio
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from app.core.exceptions import ConfigurationError, ProviderError, PublishError
 from app.core.logging import get_logger
@@ -30,6 +32,20 @@ log = get_logger(__name__)
 
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
+#: Caption geometry. The box is measured, not guessed: a character count
+#: cannot know that "MMM" is twice "iii", and ASS WrapStyle 2 does not wrap on
+#: its own — anything too wide simply runs off the side of the frame.
+CAPTION_FONT = "DejaVu Sans"
+CAPTION_FONT_SIZE = 64
+CAPTION_MARGIN = 90
+CAPTION_BOTTOM = 320
+CAPTION_OUTLINE = 5
+CAPTION_BOX = WIDTH - 2 * CAPTION_MARGIN - 2 * CAPTION_OUTLINE - 2
+CAPTION_LINES = 2
+#: A word spoken faster than this still gets a readable moment on screen.
+MIN_CUE_SEC = 0.12
+#: How long a caption stays up when the transcript gives no usable end time.
+DEFAULT_CUE_SEC = 1.4
 AUDIO_RATE = 48000
 
 #: Anything quieter than this for longer than `SILENCE_MIN_SEC` is dead air.
@@ -60,6 +76,9 @@ class EditSettings:
     colour: bool = True
     clean_audio: bool = True
     subtitles: bool = True
+    #: Highlight each word as it is spoken. Needs word timings from Whisper;
+    #: without them the caption is still shown, just without the highlight.
+    karaoke: bool = True
     music: bool = True
     brand_frames: bool = True
 
@@ -284,36 +303,154 @@ def _ass_time(seconds: float) -> str:
     return f"{int(hours)}:{int(minutes):02d}:{secs:05.2f}"
 
 
-def _ass_colour(hex_value: str, fallback: str = "FFFFFF") -> str:
-    """ASS wants &HBBGGRR — the reverse of CSS."""
+def _bgr(hex_value: str, fallback: str) -> str:
+    """CSS #RRGGBB -> the BBGGRR order ASS uses."""
     value = (hex_value or "").lstrip("#")
     if len(value) != 6:
         value = fallback
-    return f"&H00{value[4:6]}{value[2:4]}{value[0:2]}"
+    return f"{value[4:6]}{value[2:4]}{value[0:2]}"
 
 
-def wrap_caption(text: str, limit: int = 34) -> str:
-    """Two short lines read better on a phone than one long one."""
-    words = text.split()
-    lines: list[str] = []
-    current = ""
+def _ass_colour(hex_value: str, fallback: str = "FFFFFF") -> str:
+    """Style-block form, with the alpha byte."""
+    return f"&H00{_bgr(hex_value, fallback)}"
+
+
+def _inline_colour(hex_value: str, fallback: str = "FFFFFF") -> str:
+    """Override form used inside a line: ``{\\c&HBBGGRR&}``."""
+    return f"&H{_bgr(hex_value, fallback)}&"
+
+
+def _ass_escape(text: str) -> str:
+    """Braces open an override block in ASS; a caption must not."""
+    return text.replace("\\", "").replace("{", "(").replace("}", ")")
+
+
+_measurer: Any = None
+
+
+def caption_width(text: str) -> float:
+    """Rendered width of a caption line, in the video's own pixel space.
+
+    libass draws with the same font file Pillow measures here, and PlayResX
+    equals the frame width, so one measured pixel is one frame pixel. If the
+    font cannot be loaded the estimate degrades to an average advance rather
+    than failing the edit.
+    """
+    global _measurer
+    if _measurer is None:
+        try:
+            from PIL import Image, ImageDraw
+
+            from app.services.video import _font
+
+            draw = ImageDraw.Draw(Image.new("L", (8, 8)))
+            font = _font(CAPTION_FONT_SIZE, bold=True)
+            _measurer = lambda value: float(draw.textlength(value, font=font))  # noqa: E731
+        except Exception as exc:
+            log.warning("caption_measure_unavailable", error=str(exc)[:200])
+            _measurer = lambda value: len(value) * CAPTION_FONT_SIZE * 0.58  # noqa: E731
+    return _measurer(text)
+
+
+def layout_words(
+    words: list[dict],
+    box: float = CAPTION_BOX,
+    max_lines: int = CAPTION_LINES,
+    measure: Callable[[str], float] = caption_width,
+) -> list[list[list[dict]]]:
+    """Greedy-wrap words into chunks of at most ``max_lines`` lines.
+
+    Returns chunks -> lines -> words. Nothing is ever dropped: a long sentence
+    becomes several chunks shown one after another. The old two-line clamp
+    silently threw away everything a speaker said past the second line.
+    """
+    chunks: list[list[list[dict]]] = []
+    lines: list[list[dict]] = []
+    line: list[dict] = []
+    text = ""
     for word in words:
-        candidate = f"{current} {word}".strip()
-        if len(candidate) > limit and current:
-            lines.append(current)
-            current = word
-        else:
-            current = candidate
-    if current:
-        lines.append(current)
-    return "\\N".join(lines[:2]) if lines else ""
+        token = str(word.get("word", "")).strip()
+        if not token:
+            continue
+        candidate = f"{text} {token}".strip()
+        if line and measure(candidate) > box:
+            lines.append(line)
+            line, candidate = [], token
+            if len(lines) == max_lines:
+                chunks.append(lines)
+                lines = []
+        line.append(word)
+        text = candidate
+    if line:
+        lines.append(line)
+    if lines:
+        chunks.append(lines)
+    return chunks
 
 
-def build_ass(segments: list[dict], colours: dict[str, str]) -> str:
-    """Brand-styled subtitles: white text, brand-coloured outline, bottom third."""
+def segment_words(segment: dict) -> tuple[list[dict], bool]:
+    """The segment's words with timings, and whether those timings are real.
+
+    Whisper's word list is paired back onto the *corrected* text, because the
+    proof-reading pass rewrites Uzbek spelling that Whisper mangles and the
+    caption has to show the corrected wording. When the two do not line up
+    one-to-one the words are spread across the segment instead — enough to wrap
+    the caption properly, but not enough to highlight: a highlight landing on
+    the wrong word is worse than no highlight at all.
+    """
+    tokens = str(segment.get("text", "")).split()
+    if not tokens:
+        return [], False
+
+    timed = [w for w in (segment.get("words") or []) if str(w.get("word", "")).strip()]
+    if len(timed) == len(tokens):
+        return [
+            {"word": token, "start": float(w.get("start", 0.0)), "end": float(w.get("end", 0.0))}
+            for token, w in zip(tokens, timed, strict=True)
+        ], True
+
+    start = float(segment.get("start", 0.0))
+    end = float(segment.get("end", 0.0))
+    if end <= start:                       # a broken or missing end still shows
+        end = start + DEFAULT_CUE_SEC
+    span = end - start
+    total = sum(len(token) for token in tokens) or 1
+    spread, cursor = [], start
+    for token in tokens:
+        share = span * len(token) / total
+        spread.append({"word": token, "start": cursor, "end": cursor + share})
+        cursor += share
+    return spread, False
+
+
+def _chunk_text(chunk: list[list[dict]], highlight: dict | None, base: str, accent: str) -> str:
+    rendered = []
+    for line in chunk:
+        parts = []
+        for word in line:
+            token = _ass_escape(str(word.get("word", "")).strip())
+            if highlight is not None and word is highlight:
+                parts.append(f"{{\\c{accent}}}{token}{{\\c{base}}}")
+            else:
+                parts.append(token)
+        rendered.append(" ".join(parts))
+    return "\\N".join(rendered)
+
+
+def build_ass(segments: list[dict], colours: dict[str, str], *, karaoke: bool = True) -> str:
+    """Brand-styled subtitles: ivory text, brand-coloured outline, bottom third.
+
+    With word timings each word turns brand-coloured as it is spoken — the
+    convention every social feed now reads as "edited". Only the colour
+    changes: scaling or emboldening the active word would re-flow the line and
+    make the whole caption twitch.
+    """
     primary = _ass_colour("FFFFFF")
     outline = _ass_colour(colours.get("primary", ""), fallback="141414")
     accent = _ass_colour(colours.get("accent", ""), fallback="C9A227")
+    base_inline = _inline_colour("FFFFFF")
+    accent_inline = _inline_colour(colours.get("accent", ""), fallback="C9A227")
 
     header = (
         "[Script Info]\n"
@@ -325,23 +462,48 @@ def build_ass(segments: list[dict], colours: dict[str, str]) -> str:
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
         "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Brand,DejaVu Sans,64,{primary},{accent},{outline},&H64000000,"
-        "-1,0,0,0,100,100,0.6,0,1,5,2,2,90,90,320,1\n\n"
+        f"Style: Brand,{CAPTION_FONT},{CAPTION_FONT_SIZE},{primary},{accent},{outline},"
+        f"&H64000000,-1,0,0,0,100,100,0.6,0,1,{CAPTION_OUTLINE},2,2,"
+        f"{CAPTION_MARGIN},{CAPTION_MARGIN},{CAPTION_BOTTOM},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
 
-    lines = []
+    lines: list[str] = []
     for segment in segments:
-        text = wrap_caption(str(segment.get("text", "")).strip())
-        if not text:
-            continue
-        start, end = float(segment.get("start", 0.0)), float(segment.get("end", 0.0))
-        if end <= start:
-            end = start + 1.4
-        lines.append(
-            f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Brand,,0,0,0,,{text}"
-        )
+        words, timed = segment_words(segment)
+        laid_out = layout_words(words)
+        flattened = [[word for line in chunk for word in line] for chunk in laid_out]
+        for position, chunk in enumerate(laid_out):
+            flat = flattened[position]
+            if not flat:
+                continue
+            # Hold the last word of a chunk until the next chunk takes over,
+            # otherwise the caption blinks out for a frame between them.
+            following = flattened[position + 1] if position + 1 < len(flattened) else []
+            hand_over = float(following[0]["start"]) if following else None
+            if karaoke and timed:
+                for index, word in enumerate(flat):
+                    start = float(word["start"])
+                    if index + 1 < len(flat):
+                        end = float(flat[index + 1]["start"])
+                    else:
+                        end = hand_over if hand_over is not None else float(word["end"])
+                    if end <= start:
+                        end = start + MIN_CUE_SEC
+                    text = _chunk_text(chunk, word, base_inline, accent_inline)
+                    lines.append(
+                        f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Brand,,0,0,0,,{text}"
+                    )
+            else:
+                start = float(flat[0]["start"])
+                end = hand_over if hand_over is not None else float(flat[-1]["end"])
+                if end <= start:
+                    end = start + DEFAULT_CUE_SEC
+                text = _chunk_text(chunk, None, base_inline, accent_inline)
+                lines.append(
+                    f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Brand,,0,0,0,,{text}"
+                )
     return header + "\n".join(lines) + "\n"
 
 
@@ -694,7 +856,9 @@ async def edit_video(
                 if spoken:
                     spoken = await correct_transcript(spoken, language)
                     ass_path = work / "subs.ass"
-                    ass_path.write_text(build_ass(spoken, colours), encoding="utf-8")
+                    ass_path.write_text(
+                        build_ass(spoken, colours, karaoke=options.karaoke), encoding="utf-8"
+                    )
                     subtitled = work / "subtitled.mp4"
                     try:
                         await burn_subtitles(current, subtitled, ass_path)

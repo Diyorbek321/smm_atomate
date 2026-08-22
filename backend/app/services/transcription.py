@@ -13,6 +13,35 @@ from app.services.llm import get_llm
 log = get_logger(__name__)
 
 
+def attach_words(segments: list[dict[str, Any]], words: list[dict[str, Any]]) -> int:
+    """Hand each word to the segment it falls inside; returns how many landed.
+
+    A word is placed by its midpoint, which survives the small overlaps Whisper
+    leaves between neighbouring segments. Segments are mutated in place because
+    the caller already owns them.
+    """
+    if not segments or not words:
+        return 0
+    placed = 0
+    for raw in words:
+        token = str(raw.get("word", "")).strip()
+        if not token:
+            continue
+        try:
+            start, end = float(raw.get("start", 0.0)), float(raw.get("end", 0.0))
+        except (TypeError, ValueError):
+            continue
+        middle = (start + end) / 2
+        for segment in segments:
+            if segment["start"] <= middle <= segment["end"]:
+                segment.setdefault("words", []).append(
+                    {"word": token, "start": start, "end": end}
+                )
+                placed += 1
+                break
+    return placed
+
+
 class TranscriptionService:
     def __init__(self, provider: str | None = None) -> None:
         self.provider = provider or settings.transcription_provider
@@ -59,10 +88,12 @@ class TranscriptionService:
         filename: str = "audio.m4a",
         language: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Timed segments for subtitles: ``[{start, end, text}, ...]``.
+        """Timed segments for subtitles: ``[{start, end, text, words}, ...]``.
 
-        Only Whisper returns timings; without it the caller simply gets no
-        subtitles rather than an error, because everything else still works.
+        Word timings are requested alongside the segments — they are what lets
+        the caption highlight each word as it is spoken. Only Whisper returns
+        timings; without it the caller simply gets no subtitles rather than an
+        error, because everything else still works.
         """
         language = language or settings.default_language
         if not audio or self.provider not in ("openai", "groq") or not self._key:
@@ -80,6 +111,7 @@ class TranscriptionService:
                     "language": language if language in {"uz", "ru", "en"} else "uz",
                     "response_format": "verbose_json",
                     "temperature": "0",
+                    "timestamp_granularities[]": ["segment", "word"],
                 },
                 timeout=300,
             )
@@ -87,15 +119,19 @@ class TranscriptionService:
             log.warning("whisper_segments_failed", error=str(exc)[:200])
             return []
 
+        payload = response.json()
         segments = []
-        for raw in response.json().get("segments") or []:
+        for raw in payload.get("segments") or []:
             text = str(raw.get("text", "")).strip()
             if not text:
                 continue
             segments.append(
                 {"start": float(raw.get("start", 0.0)), "end": float(raw.get("end", 0.0)), "text": text}
             )
-        log.info("transcript_segments", count=len(segments), provider=self.provider)
+        placed = attach_words(segments, payload.get("words") or [])
+        log.info(
+            "transcript_segments", count=len(segments), words=placed, provider=self.provider
+        )
         return segments
 
     @property
