@@ -93,6 +93,22 @@ RATIO_BY_TYPE = {
 MAX_CAROUSEL_SLIDES = 10
 
 
+def _slide_attempts(context: dict):
+    """A carousel slide as written, then a version that fits.
+
+    Every slide is checked, not just the cover: an inner slide with its last
+    line cut off is exactly as embarrassing, and the owner swipes past the
+    cover to find it.
+    """
+    yield context
+    yield {
+        **context,
+        "title": truncate_caption(context.get("title", ""), 46),
+        "body": truncate_caption(context.get("body", ""), 120),
+        "bullets": (context.get("bullets") or [])[:3],
+    }
+
+
 def _topic_seed(topic: str) -> int:
     """A stable second seed per topic, so a retry is reproducible."""
     digest = hashlib.md5((topic or "post").encode(), usedforsecurity=False).hexdigest()
@@ -163,7 +179,7 @@ class VisualAgent(BaseAgent):
         output = VisualOutput(image_prompt=brief.image_prompt or None)
 
         if request.content_type == ContentType.CAROUSEL:
-            output.slides = await self._render_carousel(request, brief)
+            output.slides = await self._render_carousel(request, brief, output.warnings)
             output.image_url = output.slides[0]["image_url"] if output.slides else None
             output.rendered_with = "card"
             return output
@@ -435,23 +451,25 @@ class VisualAgent(BaseAgent):
             "body": "",
         }
 
-    async def _render_card(
+    async def _render_checked(
         self,
-        request: VisualRequest,
-        brief: VisualBrief,
+        attempts,
         *,
         template: str,
-        canvas: str,
-        photo: str = "",
+        width: int,
+        height: int,
+        prefix: str,
         warnings: list[str] | None = None,
     ) -> str | None:
-        width, height = CANVAS[canvas]
+        """Render attempts in order, keep the first the gate passes.
+
+        If none pass, the best-scoring one still ships — a flawed card beats no
+        card — but the owner is told what was wrong with it.
+        """
         renderer = get_renderer()
         best: tuple[bytes, VisualVerdict | None] | None = None
 
-        for attempt, context in enumerate(
-            self._card_attempts(request, brief, canvas, photo), start=1
-        ):
+        for attempt, context in enumerate(attempts, start=1):
             try:
                 data = await renderer.render_png(
                     RenderRequest(template=template, context=context, width=width, height=height)
@@ -466,18 +484,43 @@ class VisualAgent(BaseAgent):
                 break
             if best is None or verdict.score > (best[1].score if best[1] else 0):
                 best = (data, verdict)
-            log.info("card_qc_retry", attempt=attempt, score=verdict.score, issues=verdict.issues[:2])
+            log.info(
+                "render_qc_retry", prefix=prefix, attempt=attempt,
+                score=verdict.score, issues=verdict.issues[:2],
+            )
 
         if best is None:                          # pragma: no cover - loop always runs
             return None
         data, verdict = best
         if warnings is not None and verdict is not None and not verdict.acceptable:
-            warnings.append(f"visual_qc {verdict.score}/10: {'; '.join(verdict.issues[:2])}")
-        return get_storage().save_bytes(
-            data, prefix=request.content_type.value, content_type="image/png"
-        ).url
+            warnings.append(
+                f"visual_qc {prefix} {verdict.score}/10: {'; '.join(verdict.issues[:2])}"
+            )
+        return get_storage().save_bytes(data, prefix=prefix, content_type="image/png").url
 
-    async def _render_carousel(self, request: VisualRequest, brief: VisualBrief) -> list[dict]:
+    async def _render_card(
+        self,
+        request: VisualRequest,
+        brief: VisualBrief,
+        *,
+        template: str,
+        canvas: str,
+        photo: str = "",
+        warnings: list[str] | None = None,
+    ) -> str | None:
+        width, height = CANVAS[canvas]
+        return await self._render_checked(
+            self._card_attempts(request, brief, canvas, photo),
+            template=template,
+            width=width,
+            height=height,
+            prefix=request.content_type.value,
+            warnings=warnings,
+        )
+
+    async def _render_carousel(
+        self, request: VisualRequest, brief: VisualBrief, warnings: list[str] | None = None
+    ) -> list[dict]:
         slides = request.slides[:MAX_CAROUSEL_SLIDES]
         if not slides:
             slides = [{"index": 1, "title": request.headline or request.topic, "body": request.hook}]
@@ -509,17 +552,14 @@ class VisualAgent(BaseAgent):
                 "cta": cta_button(request.pillar),
                 "contact": (kb.contact_line.replace("\n", "   ") if kb and kb.contact_line else ""),
             }
-            try:
-                stored = await get_renderer().render_to_storage(
-                    RenderRequest(
-                        template="carousel_slide.html", context=context, width=width, height=height
-                    ),
-                    prefix=f"slide{position}",
-                )
-                url: str | None = stored.url
-            except Exception as exc:
-                log.error("slide_render_failed", index=position, error=str(exc)[:200])
-                url = None
+            url = await self._render_checked(
+                _slide_attempts(context),
+                template="carousel_slide.html",
+                width=width,
+                height=height,
+                prefix=f"slide{position}",
+                warnings=warnings,
+            )
             rendered.append({**slide, "index": position, "image_url": url})
 
         return rendered

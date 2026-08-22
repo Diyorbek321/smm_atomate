@@ -599,3 +599,102 @@ class TestLoudness:
 
     def test_no_log_at_all_is_refused(self, monkeypatch):
         assert self._measure(monkeypatch, "ffmpeg said nothing useful") is None
+
+
+class TestCarouselGate:
+    """A clipped inner slide is as embarrassing as a clipped cover."""
+
+    @staticmethod
+    def _request(slides: int = 3):
+        from app.agents.visual import VisualRequest
+        from app.models.business import Business
+        from app.models.enums import BusinessCategory, ContentPillar, ContentType
+
+        return VisualRequest(
+            business=Business(name="Test", category=BusinessCategory.EDUCATION),
+            knowledge=None,
+            content_type=ContentType.CAROUSEL,
+            pillar=ContentPillar.EDUCATIONAL,
+            topic="Backend dasturlash",
+            slides=[
+                {
+                    "index": i,
+                    "title": f"Slayd {i} — ancha uzun sarlavha, sig'masligi mumkin",
+                    "body": "Uzun izoh matni " * 6,
+                    "bullets": ["bir", "ikki", "uch", "to'rt"],
+                }
+                for i in range(1, slides + 1)
+            ],
+        )
+
+    @staticmethod
+    def _wire(monkeypatch, tmp_path, verdicts):
+        from app.agents import visual
+        from app.services.storage import MediaStorage
+
+        seen: list[str] = []
+
+        class _Renderer:
+            async def render_png(self, request):
+                seen.append(request.context.get("title", ""))
+                return b"png-bytes"
+
+        pending = iter(verdicts)
+        reviewed: list[bytes] = []
+
+        async def _review(image, **kwargs):
+            reviewed.append(image)
+            return next(pending, None)
+
+        monkeypatch.setattr(visual, "get_renderer", lambda: _Renderer())
+        monkeypatch.setattr(visual, "review_image", _review)
+        monkeypatch.setattr(visual, "get_storage", lambda: MediaStorage(tmp_path))
+        return seen, reviewed
+
+    def test_every_slide_goes_through_the_gate(self, monkeypatch, tmp_path):
+        from app.agents.visual import VisualAgent, VisualBrief
+        from app.services.visual_qc import VisualVerdict
+
+        seen, reviewed = self._wire(monkeypatch, tmp_path, [VisualVerdict(score=9)] * 3)
+        slides = asyncio.run(VisualAgent()._render_carousel(self._request(3), VisualBrief()))
+        assert len(slides) == 3
+        assert len(reviewed) == 3                  # not just the cover
+        assert len(seen) == 3
+
+    def test_a_rejected_slide_is_redrawn_shorter(self, monkeypatch, tmp_path):
+        from app.agents.visual import VisualAgent, VisualBrief
+        from app.services.visual_qc import VisualVerdict
+
+        seen, _ = self._wire(
+            monkeypatch,
+            tmp_path,
+            [VisualVerdict(score=3, text_complete=False), VisualVerdict(score=9)],
+        )
+        warnings: list[str] = []
+        slides = asyncio.run(
+            VisualAgent()._render_carousel(self._request(1), VisualBrief(), warnings)
+        )
+        assert slides[0]["image_url"]
+        assert len(seen) == 2 and len(seen[1]) < len(seen[0])
+        assert warnings == []
+
+    def test_the_warning_names_the_slide(self, monkeypatch, tmp_path):
+        from app.agents.visual import VisualAgent, VisualBrief
+        from app.services.visual_qc import VisualVerdict
+
+        self._wire(
+            monkeypatch,
+            tmp_path,
+            [VisualVerdict(score=3, issues=["Matn kesilgan"]), VisualVerdict(score=4)],
+        )
+        warnings: list[str] = []
+        asyncio.run(VisualAgent()._render_carousel(self._request(1), VisualBrief(), warnings))
+        assert warnings and "slide1" in warnings[0]
+
+    def test_the_tightened_slide_keeps_fewer_bullets(self):
+        from app.agents.visual import _slide_attempts
+
+        context = {"title": "x" * 80, "body": "y" * 300, "bullets": ["a", "b", "c", "d"]}
+        first, second = list(_slide_attempts(context))
+        assert len(second["title"]) < len(first["title"])
+        assert len(second["bullets"]) == 3
