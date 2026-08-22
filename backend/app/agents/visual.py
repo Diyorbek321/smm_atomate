@@ -20,6 +20,7 @@ from app.services.brand_assets import photo_library
 from app.services.image_gen import DEFAULT_NEGATIVE, get_image_generator
 from app.services.renderer import CANVAS, RenderRequest, get_renderer, layout_for, merge_colors
 from app.services.storage import get_storage
+from app.services.style_dna import StyleDNA, apply_style, style_for
 from app.services.visual_qc import VisualVerdict, review_image
 from app.utils.text import truncate_caption
 
@@ -363,11 +364,14 @@ class VisualAgent(BaseAgent):
         model = request.business.capabilities.image_model or None
         seeds: tuple[int | None, ...] = (None, _topic_seed(request.topic))
         best: tuple[str, VisualVerdict] | None = None
+        # Every photo for this business shares one palette, light and lens;
+        # without that anchor twenty posts read as twenty different brands.
+        prompt = apply_style(brief.image_prompt, self._style(request))
 
         for attempt, seed in enumerate(seeds, start=1):
             try:
                 image = await generator.generate(
-                    brief.image_prompt,
+                    prompt,
                     aspect_ratio=RATIO_BY_TYPE[request.content_type],
                     negative_prompt=brief.negative_prompt or DEFAULT_NEGATIVE,
                     # The tier decides the sampler: a trial account can live
@@ -391,6 +395,15 @@ class VisualAgent(BaseAgent):
             warnings.append(f"visual_qc {best[1].score}/10: {'; '.join(best[1].issues[:2])}")
             return best[0]
         return None
+
+    @staticmethod
+    def _style(request: VisualRequest) -> StyleDNA:
+        kb = request.knowledge
+        return style_for(
+            request.business.category,
+            kb.brand_colors if kb else None,
+            kb.visual_style if kb else None,
+        )
 
     @staticmethod
     async def _review_stored(image) -> VisualVerdict | None:

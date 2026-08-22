@@ -58,6 +58,8 @@ class KnowledgeBaseUpdate(BaseModel):
     working_hours: str | None = None
     brand_colors: dict[str, Any] | None = None
     logo_url: str | None = None
+    #: palette / lighting / lens / grade / subject — see services/style_dna.py
+    visual_style: dict[str, Any] | None = None
     banned_topics: list[str] | None = None
     preferred_hashtags: list[str] | None = None
     competitors: list[str] | None = None
@@ -81,6 +83,7 @@ class KnowledgeBaseRead(ORMModel):
     working_hours: str | None
     brand_colors: dict[str, Any]
     logo_url: str | None
+    visual_style: dict[str, Any]
     banned_topics: list[str]
     preferred_hashtags: list[str]
     competitors: list[str]

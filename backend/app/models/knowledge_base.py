@@ -56,6 +56,10 @@ class KnowledgeBase(UUIDMixin, TimestampMixin, Base):
     # Visual identity used by the HTML card renderer.
     brand_colors: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     logo_url: Mapped[str | None] = mapped_column(String(512))
+    # The look every generated photo has to share: palette, light, lens, grade,
+    # who is in frame. Empty means "derive one from the brand colours".
+    # {"lighting": "soft window light", "lens": "50mm", ...} — see style_dna.py
+    visual_style: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     # Guardrails for the copywriter.
     banned_topics: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
