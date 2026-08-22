@@ -202,3 +202,229 @@ class TestCardSupersampling:
 
     def test_supersampling_is_actually_on(self):
         assert SUPERSAMPLE >= 2
+
+
+class TestVisualVerdict:
+    """The editor scores the words; this scores the picture."""
+
+    def test_a_high_score_with_nothing_clipped_is_publishable(self):
+        from app.services.visual_qc import VisualVerdict
+
+        assert VisualVerdict(score=9).acceptable is True
+
+    def test_clipped_text_is_never_acceptable_however_pretty(self):
+        from app.services.visual_qc import VisualVerdict
+
+        assert VisualVerdict(score=10, text_complete=False).acceptable is False
+
+    def test_unreadable_contrast_is_never_acceptable(self):
+        from app.services.visual_qc import VisualVerdict
+
+        assert VisualVerdict(score=10, readable=False).acceptable is False
+
+    def test_a_low_score_is_not_acceptable(self):
+        from app.services.visual_qc import VisualVerdict
+
+        assert VisualVerdict(score=4).acceptable is False
+
+
+class TestVisualQcGate:
+    @staticmethod
+    async def _review(image, monkeypatch, **kwargs):
+        from app.services import visual_qc
+
+        return await visual_qc.review_image(image, **kwargs)
+
+    def test_the_gate_can_be_switched_off(self, monkeypatch):
+        from app.services import visual_qc
+
+        monkeypatch.setattr(visual_qc.settings, "visual_qc", False)
+        assert asyncio.run(visual_qc.review_image(b"png")) is None
+
+    def test_an_empty_image_is_not_sent_anywhere(self):
+        from app.services import visual_qc
+
+        assert asyncio.run(visual_qc.review_image(b"")) is None
+
+    def test_no_multimodal_provider_means_no_opinion(self, monkeypatch):
+        """A gate that can break the pipeline is worse than no gate."""
+        from app.services import visual_qc
+
+        def boom():
+            raise RuntimeError("no key")
+
+        monkeypatch.setattr("app.services.llm.get_document_llm", boom)
+        assert asyncio.run(visual_qc.review_image(b"png")) is None
+
+    def test_the_intended_words_are_shown_to_the_reviewer(self, monkeypatch):
+        """Without them "is anything cut off?" is unanswerable."""
+        from app.services import visual_qc
+
+        seen = {}
+
+        class _Client:
+            async def generate_structured_document(self, prompt, schema, **kwargs):
+                seen["prompt"] = prompt
+                seen["mime"] = kwargs["mime_type"]
+                return schema(score=9), None
+
+        monkeypatch.setattr("app.services.llm.get_document_llm", lambda: _Client())
+        verdict = asyncio.run(
+            visual_qc.review_image(b"png", expect_text="Backend dasturlash", mime_type="image/png")
+        )
+        assert verdict is not None and verdict.score == 9
+        assert "Backend dasturlash" in seen["prompt"]
+        assert seen["mime"] == "image/png"
+
+
+class TestRenderRetries:
+    """A rejected render is attempted once more, and the better one is kept."""
+
+    @staticmethod
+    def _request():
+        from app.agents.visual import VisualRequest
+        from app.models.business import Business
+        from app.models.enums import BusinessCategory, ContentPillar, ContentType
+
+        return VisualRequest(
+            business=Business(name="Test", category=BusinessCategory.EDUCATION),
+            knowledge=None,
+            content_type=ContentType.FEED_POST,
+            pillar=ContentPillar.EDUCATIONAL,
+            topic="Backend dasturlash kursi",
+            headline="Juda uzun sarlavha, kartaga sig'masligi mumkin, shuning uchun",
+            hook="Qo'shimcha izoh matni",
+        )
+
+    def test_the_retry_shortens_the_card_instead_of_rerolling(self):
+        from app.agents.visual import VisualAgent, VisualBrief
+
+        attempts = list(
+            VisualAgent()._card_attempts(self._request(), VisualBrief(), "carousel", "")
+        )
+        assert len(attempts) == 2
+        assert len(attempts[1]["title"]) < len(attempts[0]["title"])
+        assert attempts[1]["body"] == ""
+
+    @staticmethod
+    def _wire(monkeypatch, verdicts, tmp_path):
+        from app.agents import visual
+        from app.services.storage import MediaStorage
+
+        rendered: list[int] = []
+
+        class _Renderer:
+            async def render_png(self, request):
+                rendered.append(len(request.context.get("title", "")))
+                return b"png-bytes"
+
+        calls = iter(verdicts)
+        async def _review(image, **kwargs):
+            return next(calls, None)
+
+        monkeypatch.setattr(visual, "get_renderer", lambda: _Renderer())
+        monkeypatch.setattr(visual, "review_image", _review)
+        monkeypatch.setattr(visual, "get_storage", lambda: MediaStorage(tmp_path))
+        return rendered
+
+    def test_an_acceptable_card_is_rendered_once(self, monkeypatch, tmp_path):
+        from app.agents.visual import VisualAgent, VisualBrief
+        from app.services.visual_qc import VisualVerdict
+
+        rendered = self._wire(monkeypatch, [VisualVerdict(score=9)], tmp_path)
+        url = asyncio.run(
+            VisualAgent()._render_card(
+                self._request(), VisualBrief(), template="story.html", canvas="carousel"
+            )
+        )
+        assert url and len(rendered) == 1
+
+    def test_a_rejected_card_is_rendered_again_and_shorter(self, monkeypatch, tmp_path):
+        from app.agents.visual import VisualAgent, VisualBrief
+        from app.services.visual_qc import VisualVerdict
+
+        rendered = self._wire(
+            monkeypatch,
+            [VisualVerdict(score=3, text_complete=False), VisualVerdict(score=9)],
+            tmp_path,
+        )
+        warnings: list[str] = []
+        url = asyncio.run(
+            VisualAgent()._render_card(
+                self._request(), VisualBrief(), template="story.html",
+                canvas="carousel", warnings=warnings,
+            )
+        )
+        assert url
+        assert len(rendered) == 2 and rendered[1] < rendered[0]
+        assert warnings == []                      # the second attempt was fine
+
+    def test_when_both_attempts_fail_the_owner_is_told(self, monkeypatch, tmp_path):
+        from app.agents.visual import VisualAgent, VisualBrief
+        from app.services.visual_qc import VisualVerdict
+
+        self._wire(
+            monkeypatch,
+            [
+                VisualVerdict(score=3, issues=["Matn kesilgan"]),
+                VisualVerdict(score=5, issues=["Kontrast past"]),
+            ],
+            tmp_path,
+        )
+        warnings: list[str] = []
+        url = asyncio.run(
+            VisualAgent()._render_card(
+                self._request(), VisualBrief(), template="story.html",
+                canvas="carousel", warnings=warnings,
+            )
+        )
+        assert url                                  # the better of the two still ships
+        assert warnings and "5/10" in warnings[0]
+
+    def test_without_a_gate_nothing_changes(self, monkeypatch, tmp_path):
+        """No multimodal provider: one render, no warning, same as before."""
+        from app.agents.visual import VisualAgent, VisualBrief
+
+        rendered = self._wire(monkeypatch, [None], tmp_path)
+        warnings: list[str] = []
+        url = asyncio.run(
+            VisualAgent()._render_card(
+                self._request(), VisualBrief(), template="story.html",
+                canvas="carousel", warnings=warnings,
+            )
+        )
+        assert url and len(rendered) == 1 and warnings == []
+
+    def test_the_photo_retry_uses_a_different_seed(self, monkeypatch, tmp_path):
+        from app.agents import visual
+        from app.agents.visual import VisualAgent, VisualBrief
+        from app.services.image_gen import GeneratedImage
+        from app.services.visual_qc import VisualVerdict
+
+        seeds: list[int | None] = []
+
+        class _Generator:
+            async def generate(self, prompt, **kwargs):
+                seeds.append(kwargs.get("seed"))
+                return GeneratedImage(
+                    url=f"http://media/{len(seeds)}.png", provider="fal",
+                    width=1080, height=1350, prompt=prompt,
+                )
+
+        verdicts = iter([VisualVerdict(score=2), VisualVerdict(score=8)])
+        async def _review(image):
+            return next(verdicts, None)
+
+        monkeypatch.setattr(visual, "get_image_generator", lambda: _Generator())
+        monkeypatch.setattr(VisualAgent, "_review_stored", staticmethod(_review))
+        url = asyncio.run(
+            VisualAgent()._generate_photo(self._request(), VisualBrief(image_prompt="a room"), [])
+        )
+        assert url == "http://media/2.png"
+        assert seeds[0] is None and isinstance(seeds[1], int)
+
+    def test_the_photo_seed_is_stable_per_topic(self):
+        from app.agents.visual import _topic_seed
+
+        assert _topic_seed("Backend kursi") == _topic_seed("Backend kursi")
+        assert _topic_seed("Backend kursi") != _topic_seed("Ingliz tili")

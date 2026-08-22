@@ -20,6 +20,7 @@ from app.services.brand_assets import photo_library
 from app.services.image_gen import DEFAULT_NEGATIVE, get_image_generator
 from app.services.renderer import CANVAS, RenderRequest, get_renderer, layout_for, merge_colors
 from app.services.storage import get_storage
+from app.services.visual_qc import VisualVerdict, review_image
 from app.utils.text import truncate_caption
 
 log = get_logger(__name__)
@@ -89,6 +90,12 @@ RATIO_BY_TYPE = {
 }
 
 MAX_CAROUSEL_SLIDES = 10
+
+
+def _topic_seed(topic: str) -> int:
+    """A stable second seed per topic, so a retry is reproducible."""
+    digest = hashlib.md5((topic or "post").encode(), usedforsecurity=False).hexdigest()
+    return int(digest[:8], 16)
 
 #: Cards are customer-facing, so the pillar tag has to be in the brand language
 #: — "SALES" printed on an Uzbek post reads like a leftover debug label.
@@ -169,8 +176,10 @@ class VisualAgent(BaseAgent):
 
         if request.content_type in (ContentType.STORY, ContentType.REELS_SCRIPT):
             template = "photo_card.html" if photo else "story.html"
-            stored = await self._render_card(request, brief, template=template, canvas="story", photo=photo)
-            output.image_url = stored
+            output.image_url = await self._render_card(
+                request, brief, template=template, canvas="story", photo=photo,
+                warnings=output.warnings,
+            )
             output.rendered_with = "photo_card" if photo else "card"
             if request.content_type == ContentType.STORY:
                 # Stories become motion clips when ffmpeg + a background exist;
@@ -182,25 +191,18 @@ class VisualAgent(BaseAgent):
 
         # feed_post: prefer a generated photo, fall back to a designed card.
         if request.generate_photo and brief.image_prompt:
-            try:
-                image = await get_image_generator().generate(
-                    brief.image_prompt,
-                    aspect_ratio=RATIO_BY_TYPE[request.content_type],
-                    negative_prompt=brief.negative_prompt or DEFAULT_NEGATIVE,
-                    # The tier decides the sampler: a trial account can live
-                    # with a 4-step render, a paying feed cannot.
-                    model=request.business.capabilities.image_model or None,
-                )
-                output.image_url = image.url
+            url = await self._generate_photo(request, brief, output.warnings)
+            if url:
+                output.image_url = url
                 output.rendered_with = "flux"
                 return output
-            except (ConfigurationError, ProviderError) as exc:
-                output.warnings.append(f"image_generation_failed: {str(exc)[:200]}")
-                log.warning("flux_failed_fallback_card", error=str(exc)[:200])
 
         # Real photos of the business beat a plain text card every time.
         template = "photo_card.html" if photo else "story.html"
-        output.image_url = await self._render_card(request, brief, template=template, canvas="carousel", photo=photo)
+        output.image_url = await self._render_card(
+            request, brief, template=template, canvas="carousel", photo=photo,
+            warnings=output.warnings,
+        )
         output.rendered_with = "photo_card" if photo else "card"
         return output
 
@@ -347,20 +349,120 @@ class VisualAgent(BaseAgent):
             log.warning("ai_video_failed_fallback_montage", error=str(exc)[:300])
             return None
 
+    async def _generate_photo(
+        self, request: VisualRequest, brief: VisualBrief, warnings: list[str]
+    ) -> str | None:
+        """Generate the photo; a rejected one gets exactly one more roll.
+
+        Unlike a card, a diffusion model fails differently every time it is
+        asked, so the retry is a different seed rather than different words.
+        The seed is derived from the topic so a regenerated post keeps landing
+        on the same second attempt instead of drifting.
+        """
+        generator = get_image_generator()
+        model = request.business.capabilities.image_model or None
+        seeds: tuple[int | None, ...] = (None, _topic_seed(request.topic))
+        best: tuple[str, VisualVerdict] | None = None
+
+        for attempt, seed in enumerate(seeds, start=1):
+            try:
+                image = await generator.generate(
+                    brief.image_prompt,
+                    aspect_ratio=RATIO_BY_TYPE[request.content_type],
+                    negative_prompt=brief.negative_prompt or DEFAULT_NEGATIVE,
+                    # The tier decides the sampler: a trial account can live
+                    # with a 4-step render, a paying feed cannot.
+                    model=model,
+                    seed=seed,
+                )
+            except (ConfigurationError, ProviderError) as exc:
+                warnings.append(f"image_generation_failed: {str(exc)[:200]}")
+                log.warning("flux_failed_fallback_card", error=str(exc)[:200])
+                return best[0] if best else None
+
+            verdict = await self._review_stored(image)
+            if verdict is None or verdict.acceptable:
+                return image.url
+            if best is None or verdict.score > best[1].score:
+                best = (image.url, verdict)
+            log.info("photo_qc_retry", attempt=attempt, score=verdict.score)
+
+        if best is not None:
+            warnings.append(f"visual_qc {best[1].score}/10: {'; '.join(best[1].issues[:2])}")
+            return best[0]
+        return None
+
+    @staticmethod
+    async def _review_stored(image) -> VisualVerdict | None:
+        """Run the gate over a generated photo that storage already holds."""
+        if image.stored is None:
+            return None
+        try:
+            data = image.stored.path.read_bytes()
+        except OSError:
+            return None
+        mime = "image/jpeg" if image.stored.path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+        return await review_image(data, mime_type=mime)
+
+    def _card_attempts(
+        self, request: VisualRequest, brief: VisualBrief, canvas: str, photo: str
+    ):
+        """The card as briefed, then a tighter version of it.
+
+        Almost every card the quality gate rejects is rejected for the same
+        reason — too many words for the space. Shortening the headline and
+        dropping the supporting line is the fix that actually works, so the
+        retry is that, not another roll of the dice.
+        """
+        context = self._card_context(request, brief, canvas, photo=photo)
+        yield context
+        yield {
+            **context,
+            "title": truncate_caption(context.get("title", ""), 46),
+            "body": "",
+        }
+
     async def _render_card(
-        self, request: VisualRequest, brief: VisualBrief, *, template: str, canvas: str, photo: str = ""
+        self,
+        request: VisualRequest,
+        brief: VisualBrief,
+        *,
+        template: str,
+        canvas: str,
+        photo: str = "",
+        warnings: list[str] | None = None,
     ) -> str | None:
         width, height = CANVAS[canvas]
-        context = self._card_context(request, brief, canvas, photo=photo)
-        try:
-            stored = await get_renderer().render_to_storage(
-                RenderRequest(template=template, context=context, width=width, height=height),
-                prefix=request.content_type.value,
-            )
-            return stored.url
-        except Exception as exc:
-            log.error("card_render_failed", error=str(exc)[:300], template=template)
+        renderer = get_renderer()
+        best: tuple[bytes, VisualVerdict | None] | None = None
+
+        for attempt, context in enumerate(
+            self._card_attempts(request, brief, canvas, photo), start=1
+        ):
+            try:
+                data = await renderer.render_png(
+                    RenderRequest(template=template, context=context, width=width, height=height)
+                )
+            except Exception as exc:
+                log.error("card_render_failed", error=str(exc)[:300], template=template)
+                return None
+
+            verdict = await review_image(data, expect_text=str(context.get("title", "")))
+            if verdict is None or verdict.acceptable:
+                best = (data, verdict)
+                break
+            if best is None or verdict.score > (best[1].score if best[1] else 0):
+                best = (data, verdict)
+            log.info("card_qc_retry", attempt=attempt, score=verdict.score, issues=verdict.issues[:2])
+
+        if best is None:                          # pragma: no cover - loop always runs
             return None
+        data, verdict = best
+        if warnings is not None and verdict is not None and not verdict.acceptable:
+            warnings.append(f"visual_qc {verdict.score}/10: {'; '.join(verdict.issues[:2])}")
+        return get_storage().save_bytes(
+            data, prefix=request.content_type.value, content_type="image/png"
+        ).url
 
     async def _render_carousel(self, request: VisualRequest, brief: VisualBrief) -> list[dict]:
         slides = request.slides[:MAX_CAROUSEL_SLIDES]

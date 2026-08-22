@@ -141,6 +141,14 @@ class Settings(BaseSettings):
     fal_model_standard: str = "fal-ai/flux/dev"
     fal_model_pro: str = "fal-ai/flux-pro/v1.1"
 
+    # --- Visual quality gate ---------------------------------------------
+    #: Show every finished render to a multimodal model before it reaches the
+    #: owner's review queue. Costs a fraction of a cent per image and catches
+    #: the renders that are visibly broken — clipped text above all.
+    visual_qc: bool = True
+    #: Below this the render is attempted once more; the better of the two wins.
+    visual_qc_min_score: int = 7
+
     # --- Behaviour -------------------------------------------------------
     default_timezone: str = "Asia/Tashkent"
     default_language: str = "uz"
