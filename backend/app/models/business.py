@@ -95,7 +95,7 @@ class Business(UUIDMixin, TimestampMixin, Base):
         return [9, 13, 18]
 
     @property
-    def capabilities(self) -> "PlanCapabilities":
+    def capabilities(self) -> PlanCapabilities:
         """What this client's tier unlocks, including any per-business grants."""
         from app.core.plans import capabilities_for
 
