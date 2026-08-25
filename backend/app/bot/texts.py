@@ -165,6 +165,14 @@ REVIEW_HEADER = (
 )
 
 ITEM_APPROVED = "✅ Tasdiqlandi — {scheduled} da chiqadi."
+REJECT_WHY = (
+    "🗑 Nega bekor qilyapsiz?\n\n"
+    "Bir gapda yozing — masalan «narx noto'g'ri» yoki «rasm qorong'i». "
+    "Shu javob keyingi postlarni yaxshilaydi.\n\n"
+    "Sababsiz bekor qilish uchun /skip yuboring."
+)
+REJECT_NO_ITEM = "Qaysi post haqida ekanini topolmadim. Qaytadan boshlang."
+
 ITEM_REJECTED = "🗑 Bekor qilindi."
 ITEM_REGENERATING = "🔄 Qayta yaratilmoqda…"
 ITEM_UPDATED = "✏️ Yangilandi. Yangi variant yuqorida 👆"

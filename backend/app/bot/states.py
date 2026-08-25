@@ -17,6 +17,9 @@ class ReviewStates(StatesGroup):
 
     waiting_edit_instruction = State()
     waiting_new_datetime = State()
+    #: Why the owner is throwing this one away. The only route their taste has
+    #: into the system, and the button used to discard it.
+    waiting_reject_reason = State()
 
 
 class QuickPostStates(StatesGroup):

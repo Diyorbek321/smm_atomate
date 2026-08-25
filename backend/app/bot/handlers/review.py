@@ -25,6 +25,9 @@ from app.repositories.content import ContentItemRepository, ContentPlanRepositor
 from app.utils.dates import humanize, utcnow
 
 log = get_logger(__name__)
+
+#: Offered so a required field does not teach owners to type a full stop.
+SKIP_COMMAND = "/skip"
 router = Router(name="review")
 
 REVIEW_BATCH_SIZE = 5
@@ -105,22 +108,75 @@ async def approve_item(
 async def reject_item(
     callback: CallbackQuery,
     callback_data: ReviewCB,
+    state: FSMContext,
     session: AsyncSession,
     admin: BusinessAdmin | None,
 ) -> None:
+    """Ask why before throwing the post away.
+
+    The rejection itself waits for the answer. What the owner objects to is the
+    only signal this system gets about their taste, and pressing the button
+    used to discard it — every rejected row in the database carries the
+    planner's own note and not one sentence from a person.
+    """
     item = await _load_item(session, callback_data.item_id, admin)
     if item is None:
         await callback.answer(texts.ITEM_NOT_FOUND, show_alert=True)
         return
 
+    await state.set_state(ReviewStates.waiting_reject_reason)
+    await state.update_data(reject_item_id=str(item.id))
+    await callback.answer()
+    if callback.message:
+        await callback.message.answer(texts.REJECT_WHY)
+
+
+# `/skip` must reach the handler, so slash commands are not blocked wholesale —
+# but a menu button is a navigation press, and recording its label as the reason
+# would fill the column this exists to fill with "📋 Rejalar".
+@router.message(
+    ReviewStates.waiting_reject_reason,
+    F.text,
+    ~F.text.in_(MENU_TEXTS),
+    (F.text == SKIP_COMMAND) | ~F.text.startswith("/"),
+)
+async def reject_reason(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin: BusinessAdmin | None,
+) -> None:
+    """Record the reason, then reject.
+
+    `/skip` is offered on purpose: a required field teaches owners to type a
+    full stop, and a column of full stops is worse than a column of blanks —
+    it looks like data.
+    """
+    data = await state.get_data()
+    raw = str(getattr(message, "text", "") or "").strip()
+    await state.set_state(None)
+
+    item_id = data.get("reject_item_id")
+    if not item_id:
+        await message.answer(texts.REJECT_NO_ITEM)
+        return
+
+    item = await _load_item(session, uuid.UUID(str(item_id)), admin)
+    if item is None:
+        await message.answer(texts.ITEM_NOT_FOUND)
+        return
+
+    reason = "" if raw == SKIP_COMMAND else raw[:2000]
     item.status = ContentItemStatus.REJECTED
     item.reviewed_at = utcnow()
-    item.reviewed_by = callback.from_user.id if callback.from_user else None
+    item.reviewed_by = message.from_user.id if message.from_user else None
+    item.review_notes = reason
     await session.flush()
 
-    await callback.answer("🗑 Bekor qilindi")
-    if callback.message:
-        await mark_decided(callback.message, texts.ITEM_REJECTED)
+    log.info(
+        "item_rejected", item=str(item.id), with_reason=bool(reason), chars=len(reason)
+    )
+    await message.answer(texts.ITEM_REJECTED)
 
 
 @router.callback_query(ReviewCB.filter(F.action == "edit"))
