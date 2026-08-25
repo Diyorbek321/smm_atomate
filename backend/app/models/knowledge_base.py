@@ -61,6 +61,11 @@ class KnowledgeBase(UUIDMixin, TimestampMixin, Base):
     # {"lighting": "soft window light", "lens": "50mm", ...} — see style_dna.py
     visual_style: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
+    #: Typography, voice rules and per-brand banned words — everything about a
+    #: brand that is neither a colour nor a photograph. See
+    #: app/services/brand_kit.py; empty is valid and falls back per field.
+    brand_kit: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+
     # Guardrails for the copywriter.
     banned_topics: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
     preferred_hashtags: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)

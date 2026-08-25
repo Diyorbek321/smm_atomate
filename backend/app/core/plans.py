@@ -16,7 +16,10 @@ from app.core.config import settings
 from app.models.enums import ContentPillar, ContentType, Plan
 
 #: Capabilities that can be overridden per business (booleans only).
-OVERRIDABLE = ("instagram", "video", "video_editing", "ai_video", "lead_autoreply")
+OVERRIDABLE = (
+    "instagram", "video", "video_editing", "ai_video", "lead_autoreply",
+    "prefers_real_photo",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +33,14 @@ class PlanCapabilities:
     video_editing: bool   # polishing footage the client shot themselves
     ai_video: bool        # paid generative video (fal.ai) — costs money per clip
     lead_autoreply: bool
+    #: Whether a real photograph of this business beats a generated one.
+    #:
+    #: The instinct is to give the top tier the most expensive image model, and
+    #: that optimises the wrong axis. A parent in Angren knows the building and
+    #: the teachers; a Flux "student" tells them in one glance that the centre
+    #: had no real student to show. Below this tier there is usually no photo
+    #: library yet, so generation is the only option and the ranking stands.
+    prefers_real_photo: bool = False
     #: Which text-to-image model renders this tier's photos. The cheapest one
     #: is a 4-step distilled model — fine for a trial, visibly rough for a
     #: client whose feed this becomes. The price gap is a couple of cents.
@@ -48,6 +59,7 @@ PLAN_CAPABILITIES: dict[Plan, PlanCapabilities] = {
         video_editing=False,
         ai_video=False,
         lead_autoreply=False,
+        prefers_real_photo=False,
         image_model=settings.fal_model_start,
     ),
     Plan.STANDARD: PlanCapabilities(
@@ -66,6 +78,7 @@ PLAN_CAPABILITIES: dict[Plan, PlanCapabilities] = {
         video_editing=True,
         ai_video=False,
         lead_autoreply=False,
+        prefers_real_photo=False,
         image_model=settings.fal_model_standard,
     ),
     Plan.PRO: PlanCapabilities(
@@ -76,6 +89,7 @@ PLAN_CAPABILITIES: dict[Plan, PlanCapabilities] = {
         video_editing=True,
         ai_video=True,
         lead_autoreply=True,
+        prefers_real_photo=True,
         image_model=settings.fal_model_pro,
     ),
 }

@@ -22,13 +22,21 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from app.core.config import settings
 from app.core.exceptions import ConfigurationError, PublishError
 from app.core.logging import get_logger
-from app.services.encoding import audio_args, video_args
-from app.services.music import MusicSpec, render_bed, snap_to_beat, write_wav
+from app.services.encoding import audio_args, loudnorm_filter, video_args
+from app.services.music import (
+    Bed,
+    MusicSpec,
+    channels_of,
+    pan_gain,
+    render_bed,
+    snap_to_beat,
+    write_wav,
+)
 from app.services.storage import StoredFile, get_storage
 from app.services.video import ffmpeg_path
 
@@ -47,6 +55,17 @@ def px(value: float) -> int:
     """Design units → device pixels."""
     return int(round(value * RENDER_SCALE))
 
+
+#: Side of a square 3D prop render, in design units. The object itself covers
+#: roughly the middle 72% of that square — the rest is the black backing the
+#: radial mask fades out — so the layout reserves `PROP_RENDER_EXTENT`, not the
+#: full side, or the text band below it collapses.
+#: Frames a cut cross-blurs over. Five at 30 fps is ~0.17 s — long enough to
+#: read as a move, short enough that no information is lost inside it.
+WHIP_FRAMES = 5
+
+PROP_RENDER_SIZE = 520
+PROP_RENDER_EXTENT = 0.72
 
 #: Nothing important is drawn outside this box — platform UI overlaps the rest.
 SAFE_X, SAFE_TOP, SAFE_BOTTOM = px(56), px(168), px(1140)
@@ -156,6 +175,11 @@ class KineticSpec:
     footer: str = ""
     logo: bytes | None = None
     prop_photos: list[Path] = field(default_factory=list)
+    #: 3D object renders on a black backing — screen-blended into the scene
+    #: rather than framed like a photo. Preferred over `prop_photos` when both
+    #: are available, because a rendered object carries a scene and a
+    #: stock photograph decorates one.
+    prop_renders: list[Path] = field(default_factory=list)
     #: A licensed track to lay under the clip; without one the engine
     #: synthesises its own tempo-locked bed.
     music: Path | None = None
@@ -176,19 +200,49 @@ def _env(i: int, n: int, attack: float = 0.08) -> float:
     return (1 - (pos - attack) / (1 - attack)) ** 1.6
 
 
+def _coeff(hz: float) -> float:
+    """One-pole coefficient for a cutoff in Hz."""
+    return 1.0 - math.exp(-2 * math.pi * hz / SAMPLE_RATE)
+
+
+def band_noise(n: int, rng: random.Random, low_hz: float, high_hz: float) -> list[float]:
+    """Band-limited noise.
+
+    Raw ``uniform(-1, 1)`` is white, and white noise is what makes a cue read
+    as static rather than as air. Every noise-based cue goes through here so
+    its energy sits in a band we chose instead of across the whole spectrum.
+    """
+    a_hi, a_lo = _coeff(high_hz), _coeff(low_hz)
+    hi1 = hi2 = lo1 = lo2 = 0.0
+    out: list[float] = []
+    for _ in range(n):
+        white = rng.uniform(-1, 1)
+        hi1 += (white - hi1) * a_hi                  # cascaded: 12 dB/oct, not 6.
+        hi2 += (hi1 - hi2) * a_hi                    # One pole leaks far too
+        lo1 += (white - lo1) * a_lo                  # much above the corner to
+        lo2 += (lo1 - lo2) * a_lo                    # call the result banded.
+        out.append((hi2 - lo2) * 2.6)                # make up the lost level
+    return out
+
+
 def _sfx_whoosh(duration: float = 0.5) -> list[float]:
-    """Filtered noise sweeping dull → bright → dull: the transition sound."""
+    """Air sweeping dull → open → dull: the transition sound.
+
+    The sweep tops out at ~3 kHz. It used to add a complementary highpass tail
+    on top of the sweep, which put broadband energy in the sibilance band on
+    every single cut — the harshest thing in the mix.
+    """
     rng = random.Random(11)
     n = int(duration * SAMPLE_RATE)
     out: list[float] = []
-    low = 0.0
+    one = two = 0.0
     for i in range(n):
         pos = i / n
         white = rng.uniform(-1, 1)
-        cutoff = 0.02 + 0.30 * math.sin(math.pi * pos) ** 1.5
-        low += (white - low) * cutoff
-        high = white - low                       # complementary highpass tail
-        out.append((low * 0.85 + high * 0.25 * pos) * _env(i, n, 0.35) * 0.85)
+        a = _coeff(220) + _coeff(2100) * math.sin(math.pi * pos) ** 1.5
+        one += (white - one) * a
+        two += (one - two) * a                       # second pole: 12 dB/oct
+        out.append(two * _env(i, n, 0.35) * 0.85)
     return out
 
 
@@ -204,15 +258,21 @@ def _sfx_pop() -> list[float]:
 
 
 def _sfx_tick() -> list[float]:
-    """Tiny high click under each word — the texture that sells the edit."""
+    """Tiny click under each word — the texture that sells the edit.
+
+    Pitched down from 2.6 kHz and its white-noise half replaced with a narrow
+    band: at one tick per word these stack up, and stacked white noise is
+    fatigue.
+    """
     rng = random.Random(3)
     n = int(0.05 * SAMPLE_RATE)
+    noise = band_noise(n, rng, 900, 3400)
     out = []
     for i in range(n):
         t = i / SAMPLE_RATE
         out.append(
-            (math.sin(2 * math.pi * 2600 * t) * 0.6 + rng.uniform(-0.4, 0.4))
-            * math.exp(-90 * t) * 0.5
+            (math.sin(2 * math.pi * 1750 * t) * 0.62 + noise[i] * 1.1)
+            * math.exp(-90 * t) * 0.27
         )
     return out
 
@@ -230,15 +290,20 @@ def _sfx_riser(duration: float = 1.0) -> list[float]:
 
 
 def _sfx_impact() -> list[float]:
-    """Sub-bass hit with a noise transient — the logo landing."""
+    """Sub-bass hit — the logo landing.
+
+    The broadband crack this used to open with pushed the cue past full scale
+    (peak 1.22) and gave every chapter marker a click. A short band-limited
+    thump gives the same sense of arrival without either problem.
+    """
     rng = random.Random(5)
-    n = int(0.75 * SAMPLE_RATE)
+    n = int(0.90 * SAMPLE_RATE)
+    thump = band_noise(n, rng, 120, 700)
     out = []
     for i in range(n):
         t = i / SAMPLE_RATE
-        sub = math.sin(2 * math.pi * (95 * math.exp(-3 * t) + 42) * t) * math.exp(-4.5 * t)
-        crack = rng.uniform(-1, 1) * math.exp(-45 * t) * 0.5
-        out.append((sub * 0.95 + crack) * 0.9)
+        sub = math.sin(2 * math.pi * (88 * math.exp(-3 * t) + 40) * t) * math.exp(-3.8 * t)
+        out.append((sub * 0.92 + thump[i] * math.exp(-26 * t) * 0.30) * 0.82)
     return out
 
 
@@ -252,31 +317,76 @@ def sfx_library() -> dict[str, list[float]]:
     }
 
 
+#: Where each cue sits in the stereo field. Transitions travel across it —
+#: a whoosh that moves is heard as the edit moving — while anything that
+#: lands on the cut itself stays centred with the kick.
+CUE_PAN = {"whoosh": 0.55, "riser": 0.30}
+
+
 def mix_soundtrack(
     cues: list[tuple[str, float, float]],
     duration: float,
     path: Path,
-    bed: array.array | None = None,
+    bed: Bed | array.array | None = None,
 ) -> Path:
-    """Sum every cue (and the music bed) into one mono WAV — one ffmpeg input."""
+    """Sum every cue (and the music bed) into one stereo WAV — one ffmpeg input."""
     library = sfx_library()
     total = int((duration + 0.6) * SAMPLE_RATE)
-    buffer = array.array("d", bytes(8 * total))
-    if bed is not None:
-        for index in range(min(total, len(bed))):
-            buffer[index] += bed[index]
-    for name, at, gain in cues:
+    left = array.array("d", bytes(8 * total))
+    right = array.array("d", bytes(8 * total))
+
+    channels = channels_of(bed)
+    if channels is not None:
+        bed_l, bed_r = channels
+        for index in range(min(total, len(bed_l))):
+            left[index] += bed_l[index]
+            right[index] += bed_r[index]
+
+    for order, (name, at, gain) in enumerate(cues):
         sound = library.get(name)
         if not sound:
             continue
+        # Successive whooshes alternate sides, so a six-scene edit sweeps back
+        # and forth rather than firing the same sound six times.
+        swing = CUE_PAN.get(name, 0.0) * (1 if order % 2 else -1)
+        gain_l = gain * pan_gain(-swing)
+        gain_r = gain * pan_gain(swing)
         start = int(max(0.0, at) * SAMPLE_RATE)
         for offset, sample in enumerate(sound):
             index = start + offset
             if index >= total:
                 break
-            buffer[index] += sample * gain
+            left[index] += sample * gain_l
+            right[index] += sample * gain_r
 
-    return write_wav(buffer, path)
+    return write_wav(Bed(soften(left), soften(right)), path)
+
+
+def soften(samples: array.array) -> array.array:
+    """Master shaping: shelve the top end down, then limit only the peaks.
+
+    Two jobs. The shelf tames the top end, where synthesised cues pile up and
+    where phone speakers are harshest. The limiter leaves anything under 0.82
+    untouched, so it shapes transients instead of adding the saturation
+    harmonics a plain tanh() puts on the whole signal.
+
+    The shelf used to take 4.5 dB off everything above 4 kHz. Against a bed
+    whose sources are near-pure sines that is most of the harmonic content it
+    has, and the result measured — and sounded — dull. 2 dB still catches the
+    harshness without removing the air.
+    """
+    a = _coeff(4000)
+    low = 0.0
+    for i, value in enumerate(samples):
+        low += (value - low) * a
+        shaped = low + (value - low) * 0.79          # -2.0 dB above 4 kHz
+        magnitude = abs(shaped)
+        if magnitude > 0.82:
+            shaped = math.copysign(
+                0.82 + 0.18 * math.tanh((magnitude - 0.82) / 0.18), shaped
+            )
+        samples[i] = shaped
+    return samples
 
 
 # --------------------------------------------------------------------------- #
@@ -285,6 +395,7 @@ def mix_soundtrack(
 
 _vignette_cache: Image.Image | None = None
 _grain_cache: list[Image.Image] = []
+_mask_cache: dict[int, Image.Image] = {}
 
 
 def _vignette_overlay() -> Image.Image:
@@ -563,12 +674,21 @@ class _SceneRenderer:
 
         self.direction = DIRECTIONS[index % len(DIRECTIONS)]
         self.wipe_from = rng.choice(("left", "right", "top", "bottom"))
+        # How this scene arrives. A colour wipe covers the whole frame in flat
+        # accent for two frames — a hard brand hit that suits a section marker
+        # and reads as a strobe anywhere else, so everything else cross-blurs
+        # out of the scene before it. The opening scene arrives on its own.
+        self.transition = (
+            "none" if index == 0 else "wipe" if scene.kind == "chapter" else "whip"
+        )
         # Technique budget: at most one special move per scene, and never two
         # scenes in a row — restraint is what separates an edit from a demo reel.
         self.reveal_scene = scene.kind == "text" and index % 4 == 3
         self.tiles: list[_Tile] = []
         self.word_beats: list[float] = []
         self.prop: Image.Image | None = None
+        self.prop_blend = "normal"
+        self.prop_extent = 0
         self.prop_center = (W // 2, px(470))
         self.sub_y = SAFE_BOTTOM - px(120)
         # Timings are authored in seconds and normalised against the scene, so
@@ -588,11 +708,20 @@ class _SceneRenderer:
         if scene.kind in ("outro", "chapter", "stat", "split", "code"):
             return                                # these draw themselves, no tiles
 
-        if scene.kind == "prop" and self.spec.prop_photos:
-            self.prop = self._prop_image()
+        if scene.kind == "prop":
+            # A rendered object wins over a stock photo: it is brand-coloured,
+            # it has depth, and it composites into the scene instead of sitting
+            # in a medallion on top of it.
+            self.prop = self._prop_render()
+            if self.prop is not None:
+                self.prop_blend = "screen" if self.treatment == "dark" else "normal"
+                self.prop_extent = int(self.prop.height * PROP_RENDER_EXTENT)
+            elif self.spec.prop_photos:
+                self.prop = self._prop_image()
+                self.prop_extent = self.prop.height if self.prop else 0
         if self.prop is not None:
-            prop_h = self.prop.height
-            self.prop_center = (W // 2, SAFE_TOP + px(50) + prop_h // 2)
+            prop_h = self.prop_extent
+            self.prop_center = (W // 2, SAFE_TOP + px(40) + prop_h // 2)
             box_top = self.prop_center[1] + prop_h // 2 + px(54)
             box_bottom = self.sub_y - px(72 if scene.sub else 24)
         else:
@@ -677,6 +806,67 @@ class _SceneRenderer:
                 x += width
                 seen += 1
 
+    @staticmethod
+    def _crush(image: Image.Image) -> Image.Image:
+        """Push the near-black backing to true black.
+
+        A render arrives with a faint floor gradient around the object. Under a
+        screen blend anything above zero lightens the scene, and that gradient
+        is what shows the prop's bounding box as a lighter rectangle.
+        """
+        lut = []
+        for value in range(256):
+            level = (value / 255) * 1.06
+            level = (level - 0.5) * 1.30 + 0.5
+            lut.append(max(0, min(255, round(level * 255))))
+        return image.point(lut * 3)
+
+    @staticmethod
+    def _radial_mask(size: int) -> Image.Image:
+        """Soft circular falloff, so no straight edge of the source survives."""
+        cached = _mask_cache.get(size)
+        if cached is not None:
+            return cached
+        mask = Image.new("L", (size, size), 0)
+        # Inset, and blurred by less than the inset leaves to the corner: a
+        # full-square ellipse blurred hard enough to feather still carries a
+        # tail into the corners, which is the source's own bounding box
+        # bleeding back into the scene.
+        inset = int(size * 0.04)
+        ImageDraw.Draw(mask).ellipse([inset, inset, size - 1 - inset, size - 1 - inset], fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(size * 0.07))
+        _mask_cache[size] = mask
+        return mask
+
+    def _prop_render(self) -> Image.Image | None:
+        """A 3D object prepared for compositing on this scene's ground.
+
+        The alpha baked in here decides how the object meets the background:
+
+        * on a dark ground, a plain radial falloff — the draw step screens the
+          object on, so its glow spills into the scene the way it would if the
+          object were really lit there;
+        * on a light or accent ground, the object's own luminance — screen is a
+          no-op against near-white, so a chrome render simply disappears. Using
+          luminance as the alpha keeps it an object rather than a wash.
+        """
+        renders = self.spec.prop_renders
+        if not renders:
+            return None
+        pick = renders[(self.index * 5 + 2) % len(renders)]
+        try:
+            image = Image.open(pick).convert("RGB")
+        except OSError:
+            return None
+        size = px(PROP_RENDER_SIZE)
+        image = self._crush(image.resize((size, size)))
+        mask = self._radial_mask(size)
+        if self.treatment != "dark":
+            mask = ImageChops.multiply(mask, image.convert("L"))
+        out = image.convert("RGBA")
+        out.putalpha(mask)
+        return out
+
     def _prop_image(self) -> Image.Image | None:
         photos = self.spec.prop_photos
         if not photos:
@@ -726,6 +916,8 @@ class _SceneRenderer:
 
     def _wipe(self, draw: ImageDraw.ImageDraw, t: float) -> None:
         """Two-tone block swiping off the frame — hides the cut, lands the beat."""
+        if self.transition != "wipe":
+            return
         progress = clamp01(t / 0.16)
         if progress >= 1:
             return
@@ -786,7 +978,21 @@ class _SceneRenderer:
         size = (max(1, int(self.prop.width * scale)), max(1, int(self.prop.height * scale)))
         scaled = self.prop.resize(size)
         cx, cy = self.prop_center
-        canvas.paste(scaled, (cx - size[0] // 2, cy - size[1] // 2), scaled)
+        # A prop that holds perfectly still for two seconds reads as a sticker.
+        # A slow drift on its own axis is what gives the frame depth.
+        cx += int(math.cos(t * 2.0 + self.index) * px(11))
+        cy += int(math.sin(t * 2.7 + self.index) * px(15))
+        left, top = cx - size[0] // 2, cy - size[1] // 2
+
+        if self.prop_blend != "screen":
+            canvas.paste(scaled, (left, top), scaled)
+            return
+
+        box = (left, top, left + size[0], top + size[1])
+        region = canvas.crop(box).convert("RGB")
+        lit = ImageChops.screen(region, scaled.convert("RGB"))
+        region.paste(lit, (0, 0), scaled.getchannel("A"))
+        canvas.paste(region, box)
 
     def _text_layer(self, canvas: Image.Image, draw: ImageDraw.ImageDraw, t: float) -> None:
         entry = max(0.02, self.entry_n)
@@ -1277,6 +1483,7 @@ async def render_kinetic(
         issues: list[str] = []
         cover: bytes | None = None
         previous: _SceneRenderer | None = None
+        tail: Image.Image | None = None
         for index, scene in enumerate(spec.scenes):
             renderer = _SceneRenderer(scene, spec, index)
             issues.extend(qc_scene(renderer, index + 1, previous))
@@ -1286,6 +1493,19 @@ async def render_kinetic(
             cover_at = int(frames * 0.92)
             for i in range(frames):
                 image = renderer.frame(i / frames, i)
+                if renderer.transition == "whip" and tail is not None and i < WHIP_FRAMES:
+                    # Both sides of the cut blur toward each other and cross.
+                    # A straight dissolve reads as a slideshow; the blur is what
+                    # makes it read as one camera move rather than two frames.
+                    ratio = (i + 1) / (WHIP_FRAMES + 1)
+                    radius = math.sin(math.pi * ratio) * px(11)
+                    image = Image.blend(
+                        tail.filter(ImageFilter.GaussianBlur(radius)),
+                        image.filter(ImageFilter.GaussianBlur(radius)),
+                        ratio,
+                    )
+                if i == frames - 1:
+                    tail = image
                 # subsampling=0 keeps 4:4:4 chroma. The default 4:2:0 halves
                 # colour resolution, and gold text on charcoal is exactly the
                 # case where that shows as fringing — before x264 even runs.
@@ -1312,11 +1532,21 @@ async def render_kinetic(
             command += ["-stream_loop", "-1", "-i", str(spec.music)]
             filter_complex = (
                 f"[2:a]volume=0.26,afade=t=out:st={max(0.0, clock - 1.4):.2f}:d=1.4[mus];"
-                "[1:a][mus]amix=inputs=2:normalize=0[aud]"
+                f"[1:a][mus]amix=inputs=2:normalize=0,{loudnorm_filter()}[aud]"
             )
             audio_map = ["-filter_complex", filter_complex, "-map", "[aud]"]
         else:
-            audio_map = ["-map", "1:a"]
+            # Without this the clip ships at whatever the synth happened to
+            # produce — measured at -20 LUFS, six dB under everything else
+            # in the feed, which reads as a quiet, cheap video on a phone.
+            # The measurement pass is what makes it land on the target rather
+            # than a dB under it; see `loudnorm_filter`.
+            from app.services.video_editor import measure_loudness
+
+            audio_map = [
+                "-map", "1:a",
+                "-af", loudnorm_filter(measured=await measure_loudness(track)),
+            ]
 
         out_path = tmp_path / "out.mp4"
         command += [

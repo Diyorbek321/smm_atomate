@@ -1,0 +1,531 @@
+<!doctype html><meta charset="utf-8">
+<style>
+@font-face{font-family:'Anton';src:url('fonts/anton.ttf');font-weight:400;font-style:normal}
+@font-face{font-family:'PlayfairI';src:url('fonts/playfair-italic.ttf');font-weight:100 900;font-style:italic}
+@font-face{font-family:'Inter';src:url('fonts/inter.ttf');font-weight:100 900;font-style:normal}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{overflow:hidden;background:#000}
+#stage{position:relative;overflow:hidden;text-rendering:geometricPrecision;-webkit-font-smoothing:antialiased}
+#bg{position:absolute;inset:-7%;width:114%;height:114%;object-fit:cover;opacity:.9;will-change:transform}
+#glow,#vig,#grain,#flash,#wipe{position:absolute;pointer-events:none}
+#glow{mix-blend-mode:screen}
+#vig{inset:0}
+#grain{inset:0;opacity:.055;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='3'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>")}
+#flash{inset:0;mix-blend-mode:screen;opacity:0}
+#wipe{inset:0;opacity:0}
+.prop{position:absolute;mix-blend-mode:screen;will-change:transform,opacity,filter;
+  -webkit-mask-image:radial-gradient(closest-side circle at 50% 50%,#000 68%,rgba(0,0,0,0) 96%);
+          mask-image:radial-gradient(closest-side circle at 50% 50%,#000 68%,rgba(0,0,0,0) 96%)}
+.holder{position:absolute;will-change:transform,opacity,filter}
+.pane{position:absolute;display:flex;flex-direction:column;overflow:hidden}
+.ghost{position:absolute;font-family:'Anton',sans-serif;line-height:.78;pointer-events:none;
+  will-change:transform,opacity}
+.ln{display:block;white-space:nowrap;will-change:transform,opacity,filter}
+.kicker{font-family:'Inter',sans-serif;font-weight:600;text-transform:uppercase}
+.display{font-family:'Anton',sans-serif;font-weight:400;letter-spacing:-.012em;line-height:.9}
+.serif{font-family:'PlayfairI',serif;font-style:italic;font-weight:500;line-height:1}
+.body{font-family:'Inter',sans-serif;font-weight:400}
+.rule{transform-origin:left center}
+.strikebar{position:absolute;transform-origin:left center;border-radius:2px}
+.row{display:flex;align-items:flex-start;will-change:transform,opacity,filter}
+.rowL{font-family:'Anton',sans-serif;line-height:.82;flex:none}
+.rowW{font-family:'Anton',sans-serif;line-height:.98}
+.rowD{font-family:'Inter',sans-serif;font-weight:400}
+.pill{display:inline-block;border-radius:999px;font-family:'Inter',sans-serif;font-weight:700;font-style:normal}
+.badge{display:inline-block;border-radius:999px;font-family:'Inter',sans-serif;font-weight:700;
+  font-style:normal;border-style:solid}
+.photo{display:block;object-fit:cover}
+.clip{display:block;object-fit:cover}
+.table{display:flex;flex-direction:column;width:100%;will-change:transform,opacity,filter}
+.trow{display:flex;align-items:baseline;justify-content:space-between;width:100%}
+.tl{font-family:'Inter',sans-serif;font-weight:600}
+.tr{font-family:'Anton',sans-serif}
+.tdiv{width:100%}
+.option{display:flex;align-items:center;border-style:solid;will-change:transform,opacity,filter}
+.optL{display:flex;align-items:center;justify-content:center;flex:none;
+  font-family:'Anton',sans-serif;border-radius:50%}
+.optT{font-family:'Inter',sans-serif;font-weight:500;text-align:left;white-space:normal}
+#mark{position:absolute;display:flex;align-items:center;will-change:opacity,transform}
+#mark i{display:block;border-radius:5px}
+#mark span{font-family:'Inter',sans-serif;font-weight:600;text-transform:uppercase}
+</style>
+<div id="stage"></div>
+<script>
+const clamp=(x,a,b)=>Math.min(b,Math.max(a,x));
+const inv=(t,a,b)=>b<=a?(t>=b?1:0):clamp((t-a)/(b-a),0,1);
+const eOutExpo=t=>t>=1?1:1-Math.pow(2,-9*t);
+const eOutBack=t=>{const c1=1.34,c3=c1+1;return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2)};
+const eOutCubic=t=>1-Math.pow(1-t,3);
+const eInOut=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+const mix=(a,b,k)=>a+(b-a)*k;
+
+let S=null, EL=null, K=1, W=1080, H=1920;
+const u = v => (v*K).toFixed(2)+'px';
+const ALIGN={left:'flex-start',center:'center',right:'flex-end'};
+const VALIGN={top:'flex-start',center:'center',bottom:'flex-end'};
+
+function el(tag, cls, css){
+  const n=document.createElement(tag);
+  if(cls) n.className=cls;
+  if(css) Object.assign(n.style, css);
+  return n;
+}
+const colour = name => (S.palette[name] || name || S.palette.ink);
+const fmt = (v, sep) => sep===false ? String(v)
+  : String(v).replace(/\B(?=(\d{3})+(?!\d))/g, sep||' ');
+
+window.build = function(script){
+  S = script;
+  [W,H] = S.size || [1080,1920];
+  K = (S.unitScale != null) ? S.unitScale : W/1080;
+  const stage=document.getElementById('stage');
+  stage.innerHTML='';
+  Object.assign(document.body.style,{width:W+'px',height:H+'px'});
+  Object.assign(stage.style,{width:W+'px',height:H+'px',background:colour('bg')});
+  EL={scenes:[],props:[],videos:[],mark:null};
+
+  if(S.background){ const i=el('img'); i.id='bg'; i.src=S.background; stage.appendChild(i); EL.bg=i; }
+  EL.glow=el('div',null,{width:u(1300),height:u(1300),left:u(-110),top:u(420),
+    background:`radial-gradient(circle, ${S.glow||'rgba(255,255,255,.14)'}, transparent 62%)`});
+  EL.glow.id='glow'; stage.appendChild(EL.glow);
+
+  S.scenes.forEach(sc=>{
+    if(!sc.prop){ EL.props.push(null); return; }
+    const img=el('img','prop'); img.src=sc.prop.src; img.style.opacity=0;
+    stage.appendChild(img); EL.props.push(img);
+  });
+
+  S.scenes.forEach(sc=>{
+    const holder=el('div','holder',{left:'0',top:'0',width:W+'px',height:H+'px'});
+    const panes=[];
+    if(sc.layout==='split'){
+      const vertical = sc.axis==='vertical';
+      const cut = sc.splitAt!=null ? sc.splitAt : 0.5;
+      (sc.columns||[]).forEach((col,ci)=>{
+        const first = ci===0, size=(first?cut:1-cut)*100;
+        const geo = vertical
+          ? {left:first?'0':cut*100+'%', top:'0', width:size+'%', height:'100%'}
+          : {left:'0', top:first?'0':cut*100+'%', width:'100%', height:size+'%'};
+        panes.push(makePane(holder, col, sc, geo));
+      });
+    } else {
+      panes.push(makePane(holder, sc, sc, {left:'0',top:'0',width:'100%',height:'100%'}));
+    }
+    let ghost=null;
+    if(sc.ghost!=null){
+      ghost=el('div','ghost',{fontSize:u(sc.ghostSize||900),
+        color:colour(sc.ghostColor||'ink'), opacity:0,
+        left:sc.ghostX!=null?u(sc.ghostX):'50%', top:sc.ghostY!=null?u(sc.ghostY):'50%',
+        transform:'translate(-50%,-50%)'});
+      ghost.textContent=sc.ghost;
+      holder.insertBefore(ghost, holder.firstChild);
+    }
+    stage.appendChild(holder);
+    EL.scenes.push({holder,panes,ghost,spec:sc});
+  });
+
+  if(S.mark){
+    const m=el('div',null,{left:u(90),bottom:u(104),gap:u(20)}); m.id='mark';
+    m.appendChild(el('i',null,{width:u(22),height:u(22),background:colour('accent'),
+      boxShadow:`0 0 ${u(22)} ${colour('accent')}99`}));
+    const sp=el('span',null,{fontSize:u(29),letterSpacing:'.26em',color:S.markColor||'#7B8B99'});
+    sp.textContent=S.mark.text||S.mark;
+    m.appendChild(sp); stage.appendChild(m); EL.mark=m;
+  }
+
+  const vig=el('div',null,{background:S.vignette||
+    'radial-gradient(125% 78% at 50% 44%,transparent 34%,rgba(0,0,0,.62) 100%)'});
+  vig.id='vig'; stage.appendChild(vig);
+  const gr=el('div'); gr.id='grain'; stage.appendChild(gr);
+  EL.wipe=el('div'); EL.wipe.id='wipe'; stage.appendChild(EL.wipe);
+  EL.flash=el('div',null,{background:colour('accent')}); EL.flash.id='flash'; stage.appendChild(EL.flash);
+  setTime(0);
+};
+
+// Moslash ATAYLAB build() dan tashqarida: `document.fonts.ready` build'dan
+// oldin kutilsa, o'sha paytda hech bir element Anton yoki Playfair'ni
+// ishlatmagan bo'ladi — ular hali so'ralmagan. Zaxira shriftda o'lchab
+// moslasak, haqiqiy shrift yuklangach matn yana kengayadi.
+// Chaqiruvchi: build() -> rasmlar -> fonts.ready -> fit().
+window.fit = function(){ fitLines(); setTime(0); };
+
+// Matn maydonga sig'masa shriftni kichraytiradi.
+//
+// Chegara belgi sonida emas — bir xil 14 belgi 32px kicker'da 442px, 230px
+// display'da 1246px joy egallaydi. Modelga har maydon uchun alohida belgi
+// chegarasini o'rgatishdan ko'ra, tartibning o'zi moslashgani ishonchliroq.
+function fitLines(){
+  const SKIP = ['rule','photo','video','option','table'];
+  EL.scenes.forEach(s=>{
+    const was = s.holder.style.display;
+    s.holder.style.display = 'block';
+    s.panes.forEach(p=>{
+      const cs = getComputedStyle(p.pane);
+      const avail = p.pane.clientWidth
+        - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      if(avail <= 0) return;
+      p.nodes.forEach(o=>{
+        if(SKIP.includes(o.kind)) return;
+        // Qat'iy 6% qadam. Nisbatdan hisoblangan qadam chegara atrofida
+        // qotib qoladi: matn kengligi shrift o'lchamiga to'liq chiziqli emas,
+        // shuning uchun "kerakli nisbat" har safar bir xil qiymatni beradi va
+        // sikl yaqinlashmasdan to'xtaydi.
+        let guard = 0;
+        while(o.node.scrollWidth > avail + 1 && guard++ < 40){
+          const size = parseFloat(getComputedStyle(o.node).fontSize);
+          if(size <= 12) break;
+          o.node.style.fontSize = (size * 0.94).toFixed(2) + 'px';
+        }
+      });
+    });
+    s.holder.style.display = was;
+  });
+}
+
+function makePane(holder, src, sc, geo){
+  const pad = src.pad!=null ? src.pad : (sc.pad!=null ? sc.pad : 90);
+  const align = src.align || sc.align || S.align || 'left';
+  const valign = src.valign || sc.valign || S.valign || 'center';
+  const css = Object.assign({}, geo, {
+    padding:`${u(src.padTop||0)} ${u(pad)} ${u((src.shift!=null?src.shift:0)+96)}`,
+    justifyContent:VALIGN[valign], alignItems:ALIGN[align],
+    textAlign:align,
+  });
+  if(src.bg) css.background=colour(src.bg);
+  const pane=el('div','pane',css);
+  const nodes=(src.lines||[]).map(ln=>makeLine(ln,pane,align));
+  holder.appendChild(pane);
+  return {pane,nodes,spec:src};
+}
+
+function makeLine(ln, box, align){
+  const kind = ln.kind || 'display';
+  if(kind==='rule'){
+    const n=el('div','ln rule',{height:u(ln.height||3),width:u(ln.width||900),marginTop:u(ln.gap||0),
+      background:`linear-gradient(90deg, ${colour(ln.color||'accent')}, transparent)`});
+    box.appendChild(n); return {node:n,spec:ln,kind};
+  }
+  if(kind==='row'){
+    const n=el('div','row',{marginTop:u(ln.gap||60),gap:u(ln.colGap||34)});
+    const L=el('span','rowL',{fontSize:u(ln.letterSize||152),color:colour(ln.color||'accent'),
+      width:u(ln.letterWidth||130)});
+    L.textContent=ln.letter||'';
+    const right=el('div',null,{textAlign:'left'});
+    const Wd=el('div','rowW',{fontSize:u(ln.wordSize||84),color:colour(ln.wordColor||'ink')});
+    Wd.textContent=ln.word||'';
+    const D=el('div','rowD',{fontSize:u(ln.descSize||38),color:colour(ln.descColor||'muted'),marginTop:u(8)});
+    D.textContent=ln.desc||'';
+    right.appendChild(Wd); right.appendChild(D);
+    n.appendChild(L); n.appendChild(right);
+    box.appendChild(n); return {node:n,spec:ln,kind,letter:L};
+  }
+  if(kind==='pill'||kind==='badge'){
+    const wrap=el('span','ln',{marginTop:u(ln.gap||74)});
+    const css={padding:`${u(ln.padY||30)} ${u(ln.padX||62)}`,fontSize:u(ln.size||48)};
+    if(kind==='pill'){ css.background=colour(ln.color||'accent'); css.color=colour(ln.textColor||'bg'); }
+    else { css.borderWidth=u(ln.border||3); css.borderColor=colour(ln.color||'accent');
+           css.color=colour(ln.textColor||ln.color||'accent'); css.background='transparent'; }
+    const p=el('i',kind,css);
+    p.textContent=ln.text||'';
+    wrap.appendChild(p); box.appendChild(wrap);
+    return {node:wrap,spec:ln,kind,pill:kind==='pill'?p:null};
+  }
+  if(kind==='photo'){
+    const wrap=el('span','ln',{marginTop:u(ln.gap||0)});
+    const shape=ln.mask||'rounded';
+    const css={width:u(ln.w||620),height:u(ln.h||760)};
+    if(shape==='circle') css.borderRadius='50%';
+    else if(shape==='arch') css.borderRadius=`${u((ln.w||620)/2)} ${u((ln.w||620)/2)} ${u(ln.foot||28)} ${u(ln.foot||28)}`;
+    else css.borderRadius=u(ln.radius||28);
+    if(ln.ring) { css.border=`${u(ln.ring)} solid ${colour(ln.ringColor||'accent')}`; }
+    const img=el('img','photo',css); img.src=ln.src;
+    wrap.appendChild(img); box.appendChild(wrap);
+    return {node:wrap,spec:ln,kind};
+  }
+  if(kind==='option'){
+    // Savol formatining vizual imzosi: harf nishoni + variant matni, uch holatda.
+    // Bir sahnada neytral chiziladi, javob sahnasida to'g'risi yoritiladi —
+    // holatni sahna ichida o'zgartirishdan ko'ra ikki marta chizish soddaroq.
+    const st = ln.state || 'neutral';
+    const acc = colour(ln.color||'accent'), mut = colour('muted');
+    const n=el('div','option',{marginTop:u(ln.gap||26),width:'100%',
+      gap:u(ln.colGap||26), padding:`${u(ln.padY||26)} ${u(ln.padX||30)}`,
+      borderRadius:u(ln.radius||22), borderWidth:u(ln.border||3),
+      borderColor: st==='right'?acc : st==='wrong'? mut+'59' : mut,
+      background: st==='right'? acc+'1F' : 'transparent'});
+    const L=el('div','optL',{width:u(ln.badge||64),height:u(ln.badge||64),
+      fontSize:u(ln.letterSize||38),
+      background: st==='right'?acc : 'transparent',
+      color: st==='right'?colour('bg') : st==='wrong'? mut : colour('ink'),
+      border: st==='right'?'none':`${u(2)} solid ${st==='wrong'?mut+'59':mut}`});
+    L.textContent=ln.letter||'';
+    const T=el('div','optT',{fontSize:u(ln.size||46),
+      color: st==='wrong'? mut : colour('ink'),
+      textDecoration: st==='wrong'?'line-through':'none',
+      lineHeight: ln.lineHeight||1.25});
+    T.textContent=ln.text||'';
+    n.appendChild(L); n.appendChild(T);
+    box.appendChild(n); return {node:n,spec:ln,kind};
+  }
+  if(kind==='table'){
+    // Jadval — ta'lim markazi eng ko'p e'lon qiladigan ma'lumot shakli, va
+    // hech qaysi qator turi uni ko'tara olmasdi: chap ustun nom, o'ng ustun
+    // vaqt/narx, orasida ingichka ajratkich.
+    const n=el('div','table',{marginTop:u(ln.gap||0)});
+    (ln.rows||[]).forEach((row,i)=>{
+      if(i) n.appendChild(el('div','tdiv',{height:u(ln.divider||2),
+        marginTop:u(ln.rowGap||22), marginBottom:u(ln.rowGap||22),
+        background:colour(ln.dividerColor||'muted'), opacity:.32}));
+      const r=el('div','trow');
+      const L=el('div','tl',{fontSize:u(ln.leftSize||52),color:colour(ln.leftColor||'ink')});
+      L.textContent=row.left||'';
+      const R=el('div','tr',{fontSize:u(ln.rightSize||62),color:colour(ln.rightColor||'accent')});
+      R.textContent=row.right||'';
+      r.appendChild(L); r.appendChild(R); n.appendChild(r);
+    });
+    box.appendChild(n); return {node:n,spec:ln,kind};
+  }
+  if(kind==='video'){
+    // Haqiqiy kadr — foto bilan bir xil maskalanadi, lekin vaqt bo'yicha
+    // sahna soatiga bog'lanadi. Manba o'z tezligida emas, kompozitsiya
+    // tezligida ketadi: har kadrda currentTime aniq qo'yiladi.
+    const wrap=el('span','ln',{marginTop:u(ln.gap||0)});
+    const shape=ln.mask||'rounded';
+    const css={width:u(ln.w||620),height:u(ln.h||780)};
+    if(shape==='circle') css.borderRadius='50%';
+    else if(shape==='arch') css.borderRadius=`${u((ln.w||620)/2)} ${u((ln.w||620)/2)} ${u(ln.foot||28)} ${u(ln.foot||28)}`;
+    else css.borderRadius=u(ln.radius||28);
+    if(ln.ring) css.border=`${u(ln.ring)} solid ${colour(ln.ringColor||'accent')}`;
+    const v=el('video','clip',css);
+    v.src=ln.src; v.muted=true; v.playsInline=true; v.preload='auto';
+    v.setAttribute('muted',''); v.setAttribute('playsinline','');
+    wrap.appendChild(v); box.appendChild(wrap);
+    EL.videos.push({node:v, spec:ln, sceneStart:null});
+    return {node:wrap,spec:ln,kind,video:v};
+  }
+  if(kind==='number'){
+    const n=el('span','ln display',{marginTop:u(ln.gap||0),fontSize:u(ln.size||420),
+      color:colour(ln.color||'accent')});
+    if(ln.glow) n.style.textShadow=`0 0 ${u(ln.glow)} ${colour(ln.color||'accent')}8C`;
+    n.textContent='0';
+    box.appendChild(n); return {node:n,spec:ln,kind};
+  }
+  const cls = kind==='serif'?'ln serif' : kind==='kicker'?'ln kicker' : kind==='body'?'ln body':'ln display';
+  const css={marginTop:u(ln.gap||0),color:colour(ln.color||(kind==='serif'?'accent':'ink')),
+             fontSize:u(ln.size||(kind==='kicker'?32:150))};
+  if(kind==='kicker') css.letterSpacing='.44em';
+  if(ln.glow) css.textShadow=`0 0 ${u(ln.glow)} ${colour(ln.color||'accent')}8C`;
+  if(ln.lineHeight) css.lineHeight=ln.lineHeight;
+  if(ln.wrap){ css.whiteSpace='normal'; css.maxWidth=u(ln.wrap); }
+  const n=el('span',cls,css);
+  n.textContent=ln.text||'';
+  let bar=null;
+  if(ln.strike){
+    n.style.position='relative'; n.style.display='inline-block';
+    bar=el('i','strikebar',{height:u(16),background:colour(ln.strikeColor||'accent'),left:u(-10),top:'56%',
+      boxShadow:`0 0 ${u(30)} ${colour(ln.strikeColor||'accent')}CC`});
+    n.appendChild(bar);
+  }
+  box.appendChild(n); return {node:n,spec:ln,kind,bar};
+}
+
+// ---- kirish uslublari ----
+function entryTransform(style, a, s){
+  const dy=s.dy!=null?s.dy:64, sc=s.scaleFrom!=null?s.scaleFrom:1.07;
+  const dx=s.dx!=null?s.dx:180;
+  switch(style){
+    case 'scale':  return {t:`scale(${mix(s.scaleFrom!=null?s.scaleFrom:0.62,1,a).toFixed(4)})`, clip:null};
+    case 'slideX': return {t:`translate3d(${(mix(dx,0,a)*K).toFixed(2)}px,0,0)`, clip:null};
+    case 'flip':   return {t:`perspective(${u(1400)}) rotateX(${mix(-72,0,a).toFixed(2)}deg)`, clip:null};
+    case 'mask':   return {t:'none', clip:`inset(0 ${((1-a)*100).toFixed(2)}% 0 0)`};
+    default:       return {t:`translate3d(0,${(mix(dy,0,a)*K).toFixed(2)}px,0) scale(${mix(sc,1,a).toFixed(4)})`, clip:null};
+  }
+}
+
+function animLine(o, t, t0, t1, sceneEntry){
+  const s=o.spec, n=o.node;
+  const style = s.entry || sceneEntry || 'rise';
+  const dur=s.dur!=null?s.dur:.52, bl=s.blur!=null?s.blur:16;
+  const ease = style==='scale' ? eOutBack : eOutExpo;
+  const a=ease(inv(t,t0,t0+dur));
+  const outAt=(s.out!=null? t0+s.out : t1-.12)+(s.outDelay||0);
+  const o2=eInOut(inv(t,outAt,outAt+.26));
+
+  if(o.kind==='rule'){
+    const w=eOutExpo(inv(t,t0,t0+(s.dur||.60)));
+    n.style.transform=`scaleX(${w.toFixed(4)})`;
+    n.style.opacity=(w*(1-o2)).toFixed(3);
+    return;
+  }
+  if(o.kind==='number'){
+    const p=(s.ease==='linear'?inv(t,t0,t0+(s.dur||1.4)):eOutCubic(inv(t,t0,t0+(s.dur||1.4))));
+    const from=s.from||0, to=s.to!=null?s.to:100;
+    n.textContent=(s.prefix||'')+fmt(Math.round(mix(from,to,p)),s.sep)+(s.suffix||'');
+  }
+  const {t:tr, clip}=entryTransform(style,a,s);
+  const extra = o2>0 ? ` translate3d(0,${(-40*K*o2).toFixed(2)}px,0) scale(${mix(1,.962,o2).toFixed(4)})` : '';
+  const blur=mix(bl,0,a)+o2*15;
+  n.style.opacity=(t<t0?0:(style==='mask'?1:a)*(1-o2)).toFixed(4);
+  n.style.transform=tr+extra;
+  n.style.clipPath=clip||'none';
+  n.style.filter=blur>.15&&style!=='mask'?`blur(${(blur*K).toFixed(2)}px)`:'none';
+
+  if(o.bar){
+    const at=s.strikeAt!=null?s.strikeAt:1.05;
+    const sw=eOutExpo(inv(t,t0+at,t0+at+.50));
+    o.bar.style.width=(o.node.offsetWidth+20*K)+'px';
+    o.bar.style.transform=`scaleX(${sw.toFixed(4)})`;
+    o.bar.style.opacity=sw>0?1:0;
+  }
+  if(o.letter){
+    const p=1-eOutExpo(inv(t,t0,t0+.34));
+    o.letter.style.textShadow=`0 0 ${((48+p*95)*K).toFixed(0)}px ${colour(s.color||'accent')}${p>0?'D9':'73'}`;
+  }
+  if(o.pill){
+    const beat=Math.max(0,Math.sin((t-t0-.4)*3.2));
+    o.pill.style.boxShadow=`0 0 ${((34+beat*66)*K).toFixed(0)}px ${colour(s.color||'accent')}66`;
+  }
+}
+
+function animProp(img,p,t,t0,t1){
+  if(!img) return;
+  if(t<t0-.35||t>t1+.35){ img.style.opacity=0; return; }
+  const a=eOutBack(inv(t,t0,t0+.85)), o=eInOut(inv(t,t1-.30,t1+.05)), ph=t-t0;
+  const drift=p.drift!=null?p.drift:26;
+  const fy=Math.sin(ph*.85)*drift*K, fx=Math.cos(ph*.62)*drift*.45*K;
+  const rr=(p.rot||0)+Math.sin(ph*.5)*(p.rotDrift!=null?p.rotDrift:5);
+  const s=mix(p.scaleFrom!=null?p.scaleFrom:.62,1,a)*mix(1,1.10,o);
+  img.style.width=u(p.w||800); img.style.left=u(p.x||140); img.style.top=u(p.y||160);
+  img.style.opacity=((p.opacity!=null?p.opacity:1)*a*(1-o)).toFixed(4);
+  img.style.filter=o>0?`blur(${(o*18*K).toFixed(1)}px)`:'none';
+  img.style.transform=`translate3d(${fx.toFixed(2)}px,${fy.toFixed(2)}px,0) rotate(${rr.toFixed(2)}deg) scale(${s.toFixed(4)})`;
+}
+
+// ---- sahna o'tishlari ----
+function sceneMotion(kind, iA, oA, dir){
+  const eI=eOutExpo(iA), eO=eInOut(oA);
+  switch(kind){
+    case 'cut':   return {x:0,y:0,blur:0,op:oA>=1?0:1};
+    case 'none':  return {x:0,y:0,blur:0,op:eI*(1-eO)};
+    case 'slide': {
+      const d = dir==='left'?-1:1;
+      return {x:(mix(d*W*0.9,0,eI)+eO*-d*W*0.5)/K, y:0, blur:eO*6, op:1-eO};
+    }
+    case 'wipe':  return {x:0,y:0,blur:eO*10,op:1-eO};
+    default:      return {x:mix(50,0,eI)+eO*-74, y:0,
+                          blur:(1-eI)*11+eO*17, op:1-eO};
+  }
+}
+
+// Qatorlar maydonga sig'yaptimi — renderer chaqiradi, natijani ogohlantirish qiladi.
+window.measure = function(){
+  const issues=[];
+  // setTime() joriy sahnadan boshqasini yashiradi; o'lchash uchun hammasini ochamiz
+  const was = EL.scenes.map(s=>s.holder.style.display);
+  EL.scenes.forEach(s=>{ s.holder.style.display='block'; });
+  EL.scenes.forEach((s,si)=>s.panes.forEach((p,pi)=>{
+    const avail = p.pane.clientWidth
+      - parseFloat(getComputedStyle(p.pane).paddingLeft)
+      - parseFloat(getComputedStyle(p.pane).paddingRight);
+    p.nodes.forEach(o=>{
+      if(['rule','photo','option','table','video'].includes(o.kind)) return;
+      const w=o.node.scrollWidth;
+      if(w > avail+1) issues.push({axis:'x', scene:si+1, pane:pi+1,
+        text:(o.spec.text||o.spec.word||o.spec.letter||o.kind).slice(0,34),
+        width:Math.round(w), avail:Math.round(avail),
+        over:Math.round(w-avail), suggest:Math.floor((o.spec.size||150)*avail/w)});
+    });
+    // Vertikal sig'im: 9:16 uchun yozilgan tartib 4:5 karuselda toshib ketishi mumkin.
+    const cs=getComputedStyle(p.pane);
+    const availY = p.pane.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const usedY = [...p.pane.children].reduce((sum,ch)=>{
+      const m=getComputedStyle(ch);
+      return sum + ch.offsetHeight + parseFloat(m.marginTop||0) + parseFloat(m.marginBottom||0);
+    },0);
+    if(usedY > availY+1) issues.push({axis:'y', scene:si+1, pane:pi+1,
+      text:'sahna balandligi', width:Math.round(usedY), avail:Math.round(availY),
+      over:Math.round(usedY-availY), suggest:Math.round(100*availY/usedY)});
+  }));
+  EL.scenes.forEach((s,i)=>{ s.holder.style.display=was[i]; });
+  return issues;
+};
+
+// Renderer har kadrdan oldin buni kutadi: seek tugamaguncha suratga olsak,
+// oldingi kadr yoziladi va video sakraydi.
+window.videosReady = function(){
+  return Promise.all(EL.videos.map(v => v.node.readyState >= 2 && !v.node.seeking
+    ? Promise.resolve()
+    : new Promise(res => {
+        const done=()=>{ v.node.removeEventListener('seeked',done);
+                         v.node.removeEventListener('loadeddata',done); res(); };
+        v.node.addEventListener('seeked',done); v.node.addEventListener('loadeddata',done);
+        setTimeout(done, 400);
+      })));
+};
+
+window.setTime = function(t){
+  const D=S.duration, k=t/D;
+  if(EL.bg) EL.bg.style.transform=
+    `scale(${(1+.14*k).toFixed(4)}) translate3d(${(-16*k*K).toFixed(1)}px,${(-30*k*K).toFixed(1)}px,0)`;
+  EL.glow.style.opacity=(.5+.5*Math.sin(t*.8)).toFixed(3);
+
+  let fl=0, wipeOn=null;
+  S.scenes.forEach((sc,i)=>{
+    if(i===0) return;
+    const c=sc.at[0];
+    if(t>=c && t<c+.12) fl=Math.max(fl,(1-(t-c)/.12)*(S.flash!=null?S.flash:0.13));
+    if((sc.transition||S.transition)==='wipe' && t>=c-.02 && t<c+.34) wipeOn={sc,c};
+  });
+  EL.flash.style.opacity=fl.toFixed(4);
+
+  if(wipeOn){
+    const p=eOutExpo(inv(t,wipeOn.c-.02,wipeOn.c+.32));
+    const from=wipeOn.sc.wipeFrom||'left';
+    const pct=(p*100).toFixed(2);
+    EL.wipe.style.opacity=1;
+    EL.wipe.style.background=colour(wipeOn.sc.wipeColor||'accent');
+    EL.wipe.style.clipPath =
+      from==='left'   ? `inset(0 ${pct}% 0 0)` :
+      from==='right'  ? `inset(0 0 0 ${pct}%)` :
+      from==='top'    ? `inset(0 0 ${pct}% 0)` : `inset(${pct}% 0 0 0)`;
+  } else EL.wipe.style.opacity=0;
+
+  EL.scenes.forEach((s,i)=>{
+    const [t0,t1]=s.spec.at;
+    const on=t>=t0-.02 && t<=t1+.30;
+    s.holder.style.display=on?'block':'none';
+    animProp(EL.props[i], s.spec.prop||{}, t, t0, t1);
+    if(!on) return;
+    const kind=s.spec.transition||S.transition||'whip';
+    const iA=inv(t,t0,t0+(s.spec.inDur||.30)), oA=inv(t,t1-.10,t1+.22);
+    const m=sceneMotion(kind,iA,oA,s.spec.from);
+    s.holder.style.transform=`translate3d(${(m.x*K).toFixed(2)}px,${(m.y*K).toFixed(2)}px,0)`;
+    s.holder.style.filter=m.blur>.15?`blur(${(m.blur*K).toFixed(2)}px)`:'none';
+    s.holder.style.opacity=m.op.toFixed(4);
+    if(s.ghost){
+      const g=eOutExpo(inv(t,t0,t0+.7));
+      s.ghost.style.opacity=(g*(s.spec.ghostOpacity!=null?s.spec.ghostOpacity:0.07)*(1-eInOut(oA))).toFixed(4);
+      s.ghost.style.transform=`translate(-50%,-50%) scale(${mix(1.18,1,g).toFixed(4)})`;
+    }
+    s.panes.forEach(p=>p.nodes.forEach(o=>{
+      if(o.kind!=='video') return;
+      const src=o.spec, dur=o.video.duration||0;
+      let want=(src.start||0)+(t-t0)*(src.rate||1);
+      if(dur && src.loop!==false) want=want % Math.max(0.04,dur - (src.start||0)) + (src.start||0);
+      if(Math.abs(o.video.currentTime-want) > 0.008) o.video.currentTime=want;
+    }));
+    const sceneEntry=s.spec.entry||S.entry;
+    s.panes.forEach(p=>p.nodes.forEach(o=>
+      animLine(o,t,t0+(o.spec.at||0),t1,p.spec.entry||sceneEntry)));
+  });
+
+  if(EL.mark){
+    const from=(S.mark&&S.mark.from)||0.8;
+    const until=(S.mark&&S.mark.until)!=null?S.mark.until:S.scenes[S.scenes.length-1].at[0];
+    const mIn=eOutExpo(inv(t,from,from+.5)), mOut=eInOut(inv(t,until-.2,until+.1));
+    EL.mark.style.opacity=(mIn*(1-mOut)).toFixed(4);
+    EL.mark.style.transform=`translate3d(0,${((mix(20,0,mIn)+mOut*18)*K).toFixed(1)}px,0)`;
+  }
+};
+</script>

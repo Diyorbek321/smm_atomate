@@ -69,7 +69,10 @@ services:
   # --- Content generation (LLM heavy, long timeouts, low concurrency) ------
   worker-generation:
     <<: *app
-    command: celery -A app.tasks.celery_app worker -Q generation -c 2 -n generation@%h --loglevel=INFO
+    command: celery -A app.tasks.celery_app worker -Q generation -c 1 -n generation@%h --loglevel=INFO
+    # -c 1, not 2: a promo clip renders in a real browser and peaks near a
+    # gigabyte. Two at once does not fit in the headroom this host has, and
+    # the failure mode is an OOM kill mid-render rather than a slow queue.
     environment:
       # Inherited from x-app, plus a bigger patience budget: nobody is waiting
       # on a worker, so riding out a provider's per-minute limit is correct.

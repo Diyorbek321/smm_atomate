@@ -47,6 +47,22 @@ DEFAULT_COLORS = {
 }
 
 
+#: The house faces, used when a business pins nothing. Both are installed in
+#: the image — see the fc-cache step in the Dockerfile.
+DEFAULT_FONTS = {
+    "display": "'Anton', 'Inter', system-ui, sans-serif",
+    "body": "'Inter', 'Segoe UI', system-ui, sans-serif",
+}
+
+
+def fonts_for(brand_kit: dict[str, Any] | None) -> dict[str, str]:
+    """CSS stacks for this business, falling back to the house faces."""
+    from app.services.brand_kit import kit_for
+
+    typography = kit_for(brand_kit).typography
+    return {"display": typography.stack("display"), "body": typography.stack("body")}
+
+
 def layout_for(width: int, height: int) -> dict[str, int]:
     """Scale typography with the canvas so both formats stay balanced."""
     scale = width / 1080
@@ -99,6 +115,7 @@ class HtmlRenderer:
         template = self._env.get_template(request.template)
         context = dict(request.context)
         context.setdefault("colors", DEFAULT_COLORS)
+        context.setdefault("fonts", DEFAULT_FONTS)
         context.setdefault("layout", layout_for(request.width, request.height))
         return template.render(**context)
 

@@ -96,9 +96,23 @@ def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📅 Haftalik reja"), KeyboardButton(text="⏳ Ko'rib chiqish")],
-            [KeyboardButton(text="⚡️ Tezkor post"), KeyboardButton(text="📊 Holat")],
+            [KeyboardButton(text="⚡️ Tezkor post"), KeyboardButton(text="🎬 Klip")],
+            [KeyboardButton(text="📊 Holat"), KeyboardButton(text="🎥 Suratga olish brifi")],
+            [KeyboardButton(text="📊 Oylik hisobot")],
             [KeyboardButton(text="🧠 Bilim bazasi"), KeyboardButton(text="ℹ️ Yordam")],
         ],
         resize_keyboard=True,
         input_field_placeholder="Buyruqni tanlang yoki yozing…",
     )
+
+
+#: Every label on the persistent keyboard.
+#:
+#: The keyboard never goes away, so a menu button is always one tap from a
+#: prompt like "which topic?" — and a handler waiting on free text will happily
+#: accept "📊 Holat" as the topic. Stateful text handlers exclude these, which
+#: only works if the list is derived from the keyboard itself: a button added
+#: below and forgotten here would be swallowed again, silently.
+MENU_TEXTS: frozenset[str] = frozenset(
+    button.text for row in main_menu().keyboard for button in row
+)

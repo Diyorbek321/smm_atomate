@@ -313,3 +313,98 @@ class TestDedupePhone:
         from app.utils.text import dedupe_phone
 
         assert dedupe_phone("", self.PHONE) == ""
+
+
+class TestEmptyPhrases:
+    def test_generic_marketing_copy_is_caught(self):
+        from app.utils.text import find_empty_phrases
+
+        found = find_empty_phrases(
+            "Malakali ustozlar zamonaviy metodika bilan sifatli ta'lim beradi"
+        )
+        assert {"malakali ustoz", "zamonaviy metodika", "sifatli ta'lim"} <= set(found)
+
+    def test_apostrophe_variants_are_the_same_phrase(self):
+        from app.utils.text import find_empty_phrases
+
+        for apostrophe in ("'", "\u2018", "\u2019", "\u02bb"):
+            assert find_empty_phrases(f"Sifatli ta{apostrophe}lim beramiz")
+
+    def test_specific_copy_is_left_alone(self):
+        from app.utils.text import find_empty_phrases
+
+        assert find_empty_phrases(
+            "Sentabr guruhida 3 joy qoldi. Oyiga 800 000 so'm, ustoz Nodira 8.0 IELTS."
+        ) == []
+
+    def test_the_prompt_sample_is_a_subset_of_the_checker(self):
+        """The prompt must never ban a phrase the editor does not catch."""
+        from app.utils.text import EMPTY_PHRASE_SAMPLE, find_empty_phrases
+
+        for phrase in EMPTY_PHRASE_SAMPLE:
+            assert find_empty_phrases(f"Bizda {phrase} bor")
+
+
+class TestConcreteDetails:
+    def test_numbers_dates_and_scores_count(self):
+        from app.utils.text import find_concrete_details
+
+        assert find_concrete_details("IELTS 7.0 uchun kuniga 30 daqiqa")
+
+    def test_a_contact_line_alone_does_not_count(self):
+        from app.utils.text import find_concrete_details
+
+        assert find_concrete_details(
+            "Sifatli ta'lim. Bog'laning: +998901234567 yoki @markaz #ielts"
+        ) == []
+
+
+class TestSimilarity:
+    def test_the_same_idea_in_other_words_scores_high(self):
+        from app.utils.similarity import DUPLICATE_THRESHOLD, similarity
+
+        score = similarity(
+            "Sentabr guruhiga qabul boshlandi", "Sentabr guruhiga qabul ochildi"
+        )
+        assert score >= DUPLICATE_THRESHOLD
+
+    def test_a_headline_plus_topic_pair_still_matches(self):
+        """What the database actually stores is `headline + topic`, not a headline."""
+        from app.utils.similarity import DUPLICATE_THRESHOLD, similarity
+
+        score = similarity(
+            "Sentabr guruhiga qabul boshlandi Sentabr qabuli",
+            "Sentabr guruhiga qabul ochildi sentabr guruhi",
+        )
+        assert score >= DUPLICATE_THRESHOLD
+
+    def test_the_same_frame_with_a_different_subject_is_not_a_repeat(self):
+        """«IELTS speaking» and «IELTS listening» share a shape, not a topic."""
+        from app.utils.similarity import similarity
+
+        assert similarity(
+            "IELTS speaking uchun 3 maslahat", "Ustozimiz Nodira 8.0 oldi"
+        ) == 0.0
+
+    def test_a_two_word_headline_falls_back_to_jaccard(self):
+        """Otherwise a short title is «contained in» half the feed by accident."""
+        from app.utils.similarity import DUPLICATE_THRESHOLD, similarity
+
+        score = similarity("IELTS natijalari", "IELTS natijalari sentabr guruhida chiqdi")
+        assert score < DUPLICATE_THRESHOLD
+
+    def test_unrelated_headlines_score_low(self):
+        from app.utils.similarity import DUPLICATE_THRESHOLD, similarity
+
+        score = similarity("Sentabr guruhiga qabul boshlandi", "Ustozimiz IELTS 8.0 oldi")
+        assert score < DUPLICATE_THRESHOLD
+
+    def test_no_history_is_not_a_repeat(self):
+        from app.utils.similarity import most_similar
+
+        assert most_similar("Har qanday sarlavha", []) == ("", 0.0)
+
+    def test_stopwords_do_not_manufacture_a_match(self):
+        from app.utils.similarity import similarity
+
+        assert similarity("Biz va siz uchun bu", "Bu va siz uchun biz") == 0.0

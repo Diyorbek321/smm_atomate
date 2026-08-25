@@ -49,6 +49,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY . .
 
+# Install the shipped faces so Chromium can find them by family name. The card
+# renderer uses `page.set_content`, which has no document origin — a file://
+# @font-face is blocked there, and a CSS name that resolves to nothing falls
+# silently through to DejaVu. Every card rendered before this was set in the
+# wrong face and nothing said so.
+RUN mkdir -p /usr/share/fonts/truetype/app \
+    && cp app/assets/fonts/*.ttf /usr/share/fonts/truetype/app/ \
+    && fc-cache -f >/dev/null
+
 # Run as a non-root user; it must own the media directory it writes to.
 RUN useradd --create-home --uid 10001 autosmm \
     && mkdir -p /app/media \

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import asdict
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, File, Query, UploadFile, status
@@ -27,6 +29,8 @@ from app.schemas.business import (
 )
 from app.schemas.common import APIResponse, MessageResponse, PageMeta
 from app.schemas.knowledge_base import KnowledgeBaseRead, KnowledgeBaseUpdate
+from app.schemas.report import ClientReportRead, TopPostRead
+from app.schemas.shooting import ShootingBriefRead, ShotRead
 
 router = APIRouter(prefix="/businesses", tags=["businesses"])
 
@@ -176,6 +180,91 @@ async def get_knowledge(
     knowledge = await KnowledgeBaseRepository(session).get_or_create(business_id)
     knowledge.compute_completeness()
     return APIResponse.ok(KnowledgeBaseRead.model_validate(knowledge))
+
+
+@router.get("/{business_id}/report", response_model=APIResponse[ClientReportRead])
+async def get_client_report(
+    business_id: uuid.UUID,
+    session: SessionDep,
+    _: AuthDep,
+    month: Annotated[str | None, Query(description="YYYY-MM, default: o'tgan oy")] = None,
+) -> APIResponse[ClientReportRead]:
+    """The month as the client reads it: leads first, then what shipped."""
+    from app.services.client_report import build_report, render_telegram
+
+    business = await BusinessRepository(session).get_full_or_404(business_id)
+
+    when = None
+    if month:
+        try:
+            year, mon = (int(part) for part in month.split("-", 1))
+            when = date(year, mon, 1)
+        except (ValueError, TypeError) as exc:
+            raise ValidationError("month YYYY-MM ko'rinishida bo'lsin") from exc
+
+    report = await build_report(session, business, when)
+    return APIResponse.ok(
+        ClientReportRead(
+            business=report.business,
+            period_start=report.period_start,
+            period_end=report.period_end,
+            label=report.label,
+            published_total=report.published_total,
+            by_type=report.by_type,
+            top_posts=[TopPostRead(**asdict(post)) for post in report.top_posts],
+            leads_total=report.leads_total,
+            leads_new=report.leads_new,
+            leads_contacted=report.leads_contacted,
+            avg_quality=report.avg_quality,
+            scheduled_next=report.scheduled_next,
+            unmeasured=report.unmeasured,
+            gaps=report.gaps,
+            telegram_text=render_telegram(report),
+        )
+    )
+
+
+@router.get("/{business_id}/shooting-brief", response_model=APIResponse[ShootingBriefRead])
+async def get_shooting_brief(
+    business_id: uuid.UUID,
+    session: SessionDep,
+    _: AuthDep,
+    month: Annotated[str | None, Query(description="YYYY-MM, default: joriy oy")] = None,
+) -> APIResponse[ShootingBriefRead]:
+    """The shot list this business should film this month.
+
+    Deterministic — the same business and month always produce the same brief,
+    so the owner can be sent it twice without it changing under them.
+    """
+    from app.services.brand_assets import own_footage
+    from app.services.shooting_brief import build_brief, render_telegram
+
+    business = await BusinessRepository(session).get_full_or_404(business_id)
+    knowledge = await KnowledgeBaseRepository(session).get_or_create(business_id)
+
+    when = None
+    if month:
+        try:
+            year, mon = (int(part) for part in month.split("-", 1))
+            when = date(year, mon, 1)
+        except (ValueError, TypeError) as exc:
+            raise ValidationError("month YYYY-MM ko'rinishida bo'lsin") from exc
+
+    brief = build_brief(
+        business, knowledge, when, footage_on_hand=len(own_footage(business_id))
+    )
+    return APIResponse.ok(
+        ShootingBriefRead(
+            business=brief.business,
+            month=brief.month,
+            shots=[ShotRead(**asdict(shot)) for shot in brief.shots],
+            notes=brief.notes,
+            video_count=brief.video_count,
+            photo_count=brief.photo_count,
+            total_seconds=brief.total_seconds,
+            telegram_text=render_telegram(brief),
+        )
+    )
 
 
 @router.put("/{business_id}/knowledge", response_model=APIResponse[KnowledgeBaseRead])

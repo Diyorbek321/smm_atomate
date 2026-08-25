@@ -288,8 +288,8 @@ class TestEditorReflection:
         knowledge = empty_knowledge()
         knowledge.phone = "+998901234567"
         copy = CopyOutput(
-            caption_tg="Asl matn juda qisqa emas va telefon +998901234567 shu yerda turadi albatta",
-            caption_ig="Asl matn juda qisqa emas va telefon +998901234567 shu yerda turadi albatta",
+            caption_tg="Sentabr guruhida 12 joy qoldi, telefon +998901234567 shu yerda turadi albatta",
+            caption_ig="Sentabr guruhida 12 joy qoldi, telefon +998901234567 shu yerda turadi albatta",
             cta="Qo'ng'iroq qiling",
             hashtags=["#ielts"],
         )
@@ -348,8 +348,8 @@ class TestEditorReflection:
         knowledge = empty_knowledge()
         knowledge.phone = "+998901234567"
         copy = CopyOutput(
-            caption_tg="Yaxshi matn bu yerda turadi, telefon +998901234567 orqali bog'laning albatta",
-            caption_ig="Yaxshi matn bu yerda turadi, telefon +998901234567 orqali bog'laning albatta",
+            caption_tg="Dars 2-sentabrda boshlanadi, telefon +998901234567 orqali bog'laning albatta",
+            caption_ig="Dars 2-sentabrda boshlanadi, telefon +998901234567 orqali bog'laning albatta",
             cta="Qo'ng'iroq qiling",
         )
 

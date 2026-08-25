@@ -61,7 +61,7 @@ class TestClipSoundtrack:
         path = video.write_music_bed(tmp_path / "bed.wav", 4.0)
         assert path is not None
         with wave.open(str(path)) as handle:
-            assert handle.getnchannels() == 1
+            assert handle.getnchannels() == 2
             assert handle.getframerate() == 44100
             assert handle.getnframes() / handle.getframerate() == pytest.approx(4.0, abs=0.6)
 
@@ -698,3 +698,267 @@ class TestCarouselGate:
         first, second = list(_slide_attempts(context))
         assert len(second["title"]) < len(first["title"])
         assert len(second["bullets"]) == 3
+
+
+def brightness(samples) -> float:
+    """Spectral-brightness proxy: mean squared first difference over energy.
+
+    A 100 Hz sine measures ~0.0002, a 2.6 kHz sine ~0.12, white noise ~2.0.
+    It needs no FFT and no numpy, neither of which the service layer has.
+    """
+    values = list(samples)
+    energy = sum(value * value for value in values)
+    if energy <= 0:
+        return 0.0
+    return sum((values[i] - values[i - 1]) ** 2 for i in range(1, len(values))) / energy
+
+
+class TestDeliveredLoudness:
+    """Everything this system synthesises leaves at the feed's own target.
+
+    The kinetic renderer used to ship its clips at -20 LUFS: six dB under the
+    posts around them, which on a phone is the difference between a clip that
+    sounds produced and one that sounds like a screen recording.
+    """
+
+    def test_the_target_is_what_the_feeds_normalise_to(self):
+        assert encoding.LOUDNESS_TARGET == -14.0
+        assert "loudnorm=I=-14.0" in encoding.loudnorm_filter()
+
+    def test_true_peak_leaves_room_for_the_platform_re_encode(self):
+        assert encoding.TRUE_PEAK <= -1.0
+        assert f"TP={encoding.TRUE_PEAK}" in encoding.loudnorm_filter()
+
+    def test_the_video_editor_shares_the_one_definition(self):
+        """Two copies of a delivery target drift; there is only one."""
+        from app.services import video_editor
+
+        assert video_editor.LOUDNESS_TARGET is encoding.LOUDNESS_TARGET
+        assert video_editor.TRUE_PEAK is encoding.TRUE_PEAK
+
+    def test_a_kinetic_clip_is_normalised_with_or_without_a_music_bed(self):
+        """Both branches of the audio graph — synth-only and licensed track.
+
+        The synth-only branch passes a first-pass measurement; the licensed
+        branch cannot, because what it normalises is a mix of our track and a
+        file we never measured. Both still have to normalise.
+        """
+        source = Path("app/services/kinetic.py").read_text()
+        graph = source[source.index("if spec.music and spec.music.exists():"):]
+        graph = graph[: graph.index("out_path = tmp_path")]
+        assert graph.count("loudnorm_filter(") == 2
+        assert "loudnorm_filter(measured=" in graph
+
+
+class TestCuesAreNotHarsh:
+    """Synthesised cues stack up; broadband ones stack up into fatigue.
+
+    Each of these measured as near-white noise before the band-limiting pass,
+    which is what made the clips tiring on phone speakers.
+    """
+
+    def test_the_whoosh_no_longer_sweeps_into_the_sibilance_band(self):
+        from app.services.kinetic import _sfx_whoosh
+
+        assert brightness(_sfx_whoosh()) < 0.20
+
+    def test_the_tick_is_a_pitched_click_not_a_noise_burst(self):
+        from app.services.kinetic import _sfx_tick
+
+        assert brightness(_sfx_tick()) < 0.30
+
+    def test_the_impact_opens_without_a_broadband_crack(self):
+        from app.services.kinetic import _sfx_impact
+
+        assert brightness(_sfx_impact()) < 0.01
+
+    def test_no_cue_is_hot_enough_to_clip_the_mix(self):
+        """The impact used to peak at 1.22 — past full scale on its own."""
+        from app.services.kinetic import sfx_library
+
+        for name, samples in sfx_library().items():
+            assert max(abs(value) for value in samples) <= 1.0, name
+
+    def test_the_hat_is_a_shaker_rather_than_white_noise(self):
+        from app.services.music import _hat
+
+        assert brightness(_hat()) < 0.60
+
+    def test_the_master_shelves_the_top_end_and_limits_only_peaks(self):
+        import array
+
+        from app.services.kinetic import soften
+
+        quiet = array.array("d", [0.4, -0.4] * 200)
+        assert max(abs(v) for v in soften(array.array("d", quiet))) <= 0.45
+
+        hot = array.array("d", [3.0, -3.0] * 200)
+        assert max(abs(v) for v in soften(hot)) < 1.0
+
+
+class TestPropRenders:
+    """3D objects composite into a scene; stock photos sit on top of one."""
+
+    @staticmethod
+    def _render(tmp_path: Path, colour: tuple[int, int, int]) -> Path:
+        """A prop render: a bright object on the black backing they ship with."""
+        image = Image.new("RGB", (256, 256), (0, 0, 0))
+        Image.Image.paste(image, Image.new("RGB", (120, 120), colour), (68, 68))
+        path = tmp_path / "prop.png"
+        image.save(path)
+        return path
+
+    def _renderer(self, tmp_path, colour, *, index):
+        from app.services.kinetic import KineticSpec, Scene, _SceneRenderer
+
+        spec = KineticSpec(
+            scenes=[],
+            colors={"bg": "#0B1220", "accent": "#2FD9C4", "text": "#F2F6F8"},
+            prop_renders=[self._render(tmp_path, colour)],
+        )
+        return _SceneRenderer(Scene(kind="prop", text="salom"), spec, index)
+
+    def test_a_render_is_preferred_over_a_stock_photo(self, tmp_path):
+        renderer = self._renderer(tmp_path, (240, 240, 240), index=0)
+        assert renderer.prop is not None
+        assert renderer.prop.mode == "RGBA"
+
+    def test_a_dark_scene_screens_the_object_on(self, tmp_path):
+        """Screen keeps the object's glow spilling into a dark ground."""
+        renderer = self._renderer(tmp_path, (240, 240, 240), index=0)
+        assert renderer.treatment == "dark"
+        assert renderer.prop_blend == "screen"
+
+    def test_a_light_scene_does_not_screen_the_object_away(self, tmp_path):
+        """Screen against near-white is a no-op — the prop would vanish."""
+        renderer = self._renderer(tmp_path, (240, 240, 240), index=1)
+        assert renderer.treatment == "light"
+        assert renderer.prop_blend == "normal"
+        #: luminance drives alpha, so the black backing is fully transparent
+        assert renderer.prop.getchannel("A").getpixel((4, 4)) == 0
+
+    def test_the_black_backing_never_survives_as_a_rectangle(self, tmp_path):
+        """A corner of the source must not paint anything into the scene."""
+        renderer = self._renderer(tmp_path, (240, 240, 240), index=0)
+        alpha = renderer.prop.getchannel("A")
+        for corner in ((2, 2), (alpha.width - 3, 2), (2, alpha.height - 3)):
+            assert alpha.getpixel(corner) == 0
+
+    def test_layout_reserves_the_visible_object_not_the_whole_square(self, tmp_path):
+        """Reserving the full square collapses the text band under it."""
+        from app.services.kinetic import PROP_RENDER_EXTENT
+
+        renderer = self._renderer(tmp_path, (240, 240, 240), index=0)
+        assert renderer.prop_extent < renderer.prop.height
+        assert renderer.prop_extent == int(renderer.prop.height * PROP_RENDER_EXTENT)
+
+
+class TestSceneTransitions:
+    """A cut is hidden, but never by covering the frame in flat colour."""
+
+    @staticmethod
+    def _renderer(kind: str, index: int):
+        from app.services.kinetic import KineticSpec, Scene, _SceneRenderer
+
+        spec = KineticSpec(scenes=[], colors={"bg": "#0B1220", "accent": "#2FD9C4"})
+        return _SceneRenderer(Scene(kind=kind, text="salom"), spec, index)
+
+    def test_the_opening_scene_arrives_on_its_own(self):
+        assert self._renderer("text", 0).transition == "none"
+
+    def test_an_ordinary_cut_cross_blurs(self):
+        assert self._renderer("text", 1).transition == "whip"
+
+    def test_a_section_marker_still_gets_the_brand_wipe(self):
+        """The one place a flat accent frame is the point rather than a strobe."""
+        assert self._renderer("chapter", 2).transition == "wipe"
+
+    def test_the_wipe_draws_nothing_outside_its_own_scenes(self):
+        from unittest.mock import Mock
+
+        renderer = self._renderer("text", 1)
+        draw = Mock()
+        renderer._wipe(draw, 0.0)
+        draw.rectangle.assert_not_called()
+
+    def test_the_cross_blur_is_short_enough_to_lose_nothing(self):
+        from app.services.kinetic import FPS, WHIP_FRAMES
+
+        assert 0.10 <= WHIP_FRAMES / FPS <= 0.25
+
+
+class TestBrandPropGeneration:
+    """Each business gets its own objects, generated once and reused."""
+
+    def test_the_prompt_asks_for_the_backing_the_renderer_drops_out(self):
+        """A prop on a white or furnished background cannot be composited."""
+        from app.services.brand_props import NEGATIVE, PROMPT
+
+        filled = PROMPT.format(concept="a closed padlock", accent="#37B3A2")
+        assert "pure black background" in filled
+        assert "#37B3A2" in filled
+        for banned in ("white background", "floor", "horizon"):
+            assert banned in NEGATIVE
+
+    def test_a_topic_selects_its_own_shelf_first(self):
+        from app.services.brand_props import concepts_for
+
+        it_props = concepts_for("python backend kod", 4)
+        assert all("terminal" in c or "server" in c or "node" in c or "microchip" in c
+                   for c in it_props)
+        assert "padlock" in concepts_for("IELTS speaking", 3)[0]
+
+    def test_filenames_come_from_the_concept_so_a_re_run_tops_up(self):
+        from app.services.brand_props import _slug
+
+        assert _slug("a closed padlock") == _slug("A Closed Padlock")
+        assert _slug("a closed padlock") != _slug("a graduation cap")
+
+    def test_an_unconfigured_provider_is_not_an_error(self, tmp_path, monkeypatch):
+        """A business with no props renders exactly as it did before."""
+        from app.services import brand_props
+
+        generator = type("Off", (), {"enabled": False})()
+        result = asyncio.run(
+            brand_props.ensure_props("biz", generator=generator)
+        )
+        assert result == []
+
+    def test_an_existing_shelf_is_not_regenerated(self, tmp_path, monkeypatch):
+        from app.services import brand_props
+
+        folder = tmp_path / "props"
+        folder.mkdir()
+        for concept in brand_props.concepts_for("", 6):
+            (folder / f"{brand_props._slug(concept)}.png").write_bytes(b"x")
+        monkeypatch.setattr(brand_props, "props_dir", lambda _: folder)
+
+        called = []
+
+        async def _never(*args, **kwargs):
+            called.append(args)
+
+        monkeypatch.setattr(brand_props, "_render_one", _never)
+        generator = type("On", (), {"enabled": True})()
+        result = asyncio.run(brand_props.ensure_props("biz", generator=generator))
+        assert called == []
+        assert len(result) == 6
+
+    def test_one_failed_render_does_not_lose_the_others(self, tmp_path, monkeypatch):
+        from app.services import brand_props
+
+        folder = tmp_path / "props"
+        monkeypatch.setattr(brand_props, "props_dir", lambda _: folder)
+
+        async def _flaky(generator, concept, accent, target):
+            if "padlock" in concept:
+                return None                        # provider refused this one
+            target.write_bytes(b"png")
+            return target
+
+        monkeypatch.setattr(brand_props, "_render_one", _flaky)
+        generator = type("On", (), {"enabled": True})()
+        result = asyncio.run(
+            brand_props.ensure_props("biz", topic="", count=4, generator=generator)
+        )
+        assert len(result) == 3

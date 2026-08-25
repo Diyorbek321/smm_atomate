@@ -60,6 +60,7 @@ class KnowledgeBaseUpdate(BaseModel):
     logo_url: str | None = None
     #: palette / lighting / lens / grade / subject — see services/style_dna.py
     visual_style: dict[str, Any] | None = None
+    brand_kit: dict[str, Any] | None = None
     banned_topics: list[str] | None = None
     preferred_hashtags: list[str] | None = None
     competitors: list[str] | None = None
@@ -84,6 +85,7 @@ class KnowledgeBaseRead(ORMModel):
     brand_colors: dict[str, Any]
     logo_url: str | None
     visual_style: dict[str, Any]
+    brand_kit: dict[str, Any]
     banned_topics: list[str]
     preferred_hashtags: list[str]
     competitors: list[str]

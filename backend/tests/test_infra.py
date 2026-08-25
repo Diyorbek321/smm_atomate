@@ -506,7 +506,7 @@ class TestKineticEngine:
             tmp_path / "track.wav",
         )
         with wave.open(str(path)) as track:
-            assert track.getnchannels() == 1
+            assert track.getnchannels() == 2
             assert track.getframerate() == 44100
             frames = track.readframes(track.getnframes())
         assert track.getnframes() > 2.0 * 44100          # covers the whole clip
@@ -718,6 +718,54 @@ class TestMusicBed:
         tail = bed[int(6.0 * 44100) - 10:int(6.0 * 44100)]
         assert max(abs(v) for v in tail) < 0.05           # ends quiet, not mid-note
         assert all(v == 0 for v in bed[int(6.05 * 44100):])
+
+    def test_the_bed_is_genuinely_stereo(self):
+        """A duplicated mono channel is why synthesised beds sound small."""
+        from app.services.music import MusicSpec, render_bed
+
+        bed = render_bed(MusicSpec(seconds=6.0, bpm=120))
+        differences = sum(
+            1 for left, right in zip(bed.left, bed.right, strict=False) if abs(left - right) > 1e-4
+        )
+        assert differences > len(bed) * 0.5
+
+    def test_the_bed_is_arranged_rather_than_looped_flat(self):
+        """The intro must measure quieter than the body, or there is no range."""
+        from app.services.music import MusicSpec, render_bed
+
+        spec = MusicSpec(seconds=20.0, bpm=120)
+        bed = render_bed(spec)
+        bar = (60.0 / spec.bpm) * 4
+
+        def rms(start: float, end: float) -> float:
+            lo, hi = int(start * 44100), int(end * 44100)
+            window = bed[lo:hi]
+            return (sum(v * v for v in window) / max(1, len(window))) ** 0.5
+
+        intro, body = rms(0.0, bar), rms(bar * 4, bar * 5)
+        assert intro < body * 0.75
+
+    def test_ducking_dips_the_signal_and_lets_it_recover(self):
+        import array
+
+        from app.services.music import DUCK_RELEASE, SAMPLE_RATE, _duck
+
+        channel = array.array("d", [1.0] * SAMPLE_RATE)
+        _duck(channel, [0.5])
+
+        at = int(0.5 * SAMPLE_RATE)
+        assert channel[at] < 0.6                       # the dip lands on the kick
+        assert channel[at + int(DUCK_RELEASE * SAMPLE_RATE) - 1] > 0.95   # and recovers
+        assert channel[at - 1] == pytest.approx(1.0)   # nothing before it
+
+    def test_short_beds_skip_the_intro_they_cannot_afford(self):
+        from app.services.music import GROOVE, INTRO, LIFT, _arrangement
+
+        assert _arrangement(2) == [GROOVE, GROOVE]
+        long_form = _arrangement(10)
+        assert long_form[0] == INTRO
+        assert long_form[-1] == LIFT
+        assert GROOVE in long_form
 
     def test_beat_snapping_rounds_up_never_down(self):
         from app.services.music import snap_to_beat

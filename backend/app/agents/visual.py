@@ -6,6 +6,7 @@ import base64
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -18,7 +19,14 @@ from app.models.enums import ContentPillar, ContentType
 from app.models.knowledge_base import KnowledgeBase
 from app.services.brand_assets import photo_library
 from app.services.image_gen import DEFAULT_NEGATIVE, get_image_generator
-from app.services.renderer import CANVAS, RenderRequest, get_renderer, layout_for, merge_colors
+from app.services.renderer import (
+    CANVAS,
+    RenderRequest,
+    fonts_for,
+    get_renderer,
+    layout_for,
+    merge_colors,
+)
 from app.services.storage import get_storage
 from app.services.style_dna import StyleDNA, apply_style, style_for
 from app.services.visual_qc import VisualVerdict, review_image
@@ -136,6 +144,34 @@ def cta_button(pillar: ContentPillar) -> str:
     return CTA_BUTTONS.get(pillar, "Batafsil")
 
 
+def _design_block(design: Any | None) -> str:
+    """The designer's composition, as instructions the art director must honour.
+
+    Kept as a plain duck-typed read rather than an import so the visual agent
+    carries no dependency on the designer: with the agent switched off this is
+    one empty string that `filter(None, ...)` drops from the prompt.
+    """
+    if design is None:
+        return ""
+    layout = getattr(design, "layout", "")
+    if not layout:
+        return ""
+
+    lines = [f"Composition (decided upstream, follow it): layout={layout}"]
+    focal = getattr(design, "focal", "")
+    if focal:
+        lines.append(f"Single focal element: {focal}")
+    accent_on = getattr(design, "accent_on", "")
+    if accent_on and accent_on != "none":
+        lines.append(f"The accent color belongs to: {accent_on}")
+    density = getattr(design, "density", "")
+    if density:
+        lines.append(f"Density: {density}")
+    if getattr(design, "photo_needed", True) is False:
+        lines.append("No photograph — this is a typographic card. Return an empty image_prompt.")
+    return "\n".join(lines)
+
+
 class VisualBrief(BaseModel):
     """What the art-director agent returns."""
 
@@ -159,6 +195,10 @@ class VisualRequest:
     slides: list[dict] = field(default_factory=list)
     quote: dict | None = None
     generate_photo: bool = True
+    #: Composition decided upstream by :class:`app.agents.designer.DesignerAgent`.
+    #: ``None`` when that agent is disabled or failed — the brief is written the
+    #: same way it always was.
+    design: Any | None = None
 
 
 @dataclass(slots=True)
@@ -206,8 +246,13 @@ class VisualAgent(BaseAgent):
                     output.rendered_with = "video"
             return output
 
-        # feed_post: prefer a generated photo, fall back to a designed card.
-        if request.generate_photo and brief.image_prompt:
+        # feed_post. Which of the two wins is a tier decision, not a technical
+        # one: a real photograph of this centre is worth more than any model
+        # output, but only the top tier reliably has a photo library to draw
+        # on. See `PlanCapabilities.prefers_real_photo`.
+        prefer_real = request.business.capabilities.prefers_real_photo and bool(photo)
+
+        if request.generate_photo and brief.image_prompt and not prefer_real:
             url = await self._generate_photo(request, brief, output.warnings)
             if url:
                 output.image_url = url
@@ -238,6 +283,7 @@ class VisualAgent(BaseAgent):
                     f"Content pillar: {request.pillar.value}",
                     f"Format: {request.content_type.value} ({RATIO_BY_TYPE[request.content_type]})",
                     f"Brand accent color: {colors['accent']}",
+                    _design_block(request.design),
                     "Return JSON: image_prompt, negative_prompt, card_text, card_body, highlight.",
                 ],
             )
@@ -264,6 +310,7 @@ class VisualAgent(BaseAgent):
         return {
             "brand": request.business.name,
             "colors": merge_colors(kb.brand_colors if kb else None),
+            "fonts": fonts_for(kb.brand_kit if kb else None),
             "logo": logo_data_uri(kb),
             "photo": photo,
             "layout": layout_for(width, height),

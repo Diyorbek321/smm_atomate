@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import func, select
 
@@ -37,6 +38,29 @@ class LeadRepository(BaseRepository[Lead]):
         self.session.add(lead)
         await self.session.flush()
         return lead
+
+    async def counts_between(
+        self, business_id: uuid.UUID, start: datetime, end: datetime
+    ) -> dict[str, int]:
+        """How many people wrote in during the period, by where they got to.
+
+        `total` is what the owner paid for; the split between `new` and
+        `contacted` is what their own team did with it, and putting both in
+        one report keeps that distinction visible.
+        """
+        stmt = (
+            select(Lead.status, func.count())
+            .where(
+                Lead.business_id == business_id,
+                Lead.created_at >= start,
+                Lead.created_at <= end,
+            )
+            .group_by(Lead.status)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        counts = {str(status): int(count) for status, count in rows}
+        counts["total"] = sum(counts.values())
+        return counts
 
     async def search(
         self,

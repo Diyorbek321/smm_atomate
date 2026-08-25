@@ -165,6 +165,121 @@ class ContentItemRepository(BaseRepository[ContentItem]):
         total = int((await self.session.execute(count_stmt)).scalar() or 0)
         return rows, total
 
+    async def recent_performance(
+        self, business_id: uuid.UUID, *, days: int = 60, topics: int = 24
+    ) -> dict[str, Any]:
+        """What went out lately and how it landed.
+
+        Two questions the planner could not previously ask: which pillar earns
+        a response, and what has already been covered. Only published items
+        count — a draft nobody saw says nothing about what works.
+        """
+        since = utcnow() - timedelta(days=days)
+        stmt = (
+            select(ContentItem)
+            .where(
+                ContentItem.business_id == business_id,
+                ContentItem.status == ContentItemStatus.PUBLISHED,
+                ContentItem.published_at.is_not(None),
+                ContentItem.published_at >= since,
+            )
+            .order_by(ContentItem.published_at.desc())
+        )
+        items = list((await self.session.execute(stmt)).scalars().all())
+
+        by_pillar: dict[str, dict[str, float]] = {}
+        for item in items:
+            bucket = by_pillar.setdefault(
+                item.pillar.value, {"posts": 0, "reactions": 0, "measured": 0}
+            )
+            bucket["posts"] += 1
+            reactions = (item.metrics or {}).get("reactions")
+            if isinstance(reactions, int):
+                bucket["reactions"] += reactions
+                bucket["measured"] += 1
+        for bucket in by_pillar.values():
+            measured = bucket["measured"]
+            bucket["avg_reactions"] = round(bucket["reactions"] / measured, 1) if measured else None
+
+        return {
+            "published": len(items),
+            "by_pillar": by_pillar,
+            "recent_topics": [item.topic for item in items[:topics] if item.topic.strip()],
+        }
+
+    async def produced_between(
+        self, business_id: uuid.UUID, *, days: int = 30, limit: int = 400
+    ) -> Sequence[ContentItem]:
+        """Everything the pipeline *made* in the window, whatever became of it.
+
+        `recent_performance` only looks at what was published, because that is
+        the question a planner asks. The analyst asks the other one: how the
+        machine behaved — what got rejected, rewritten, or failed to publish.
+        Those rows are invisible to any published-only query.
+        """
+        since = utcnow() - timedelta(days=days)
+        stmt = (
+            select(ContentItem)
+            .where(
+                ContentItem.business_id == business_id,
+                ContentItem.created_at >= since,
+            )
+            .order_by(ContentItem.created_at.desc())
+            .limit(limit)
+        )
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def published_between(
+        self, business_id: uuid.UUID, start: datetime, end: datetime
+    ) -> Sequence[ContentItem]:
+        """Everything that actually reached a follower in the period."""
+        stmt = (
+            select(ContentItem)
+            .where(
+                ContentItem.business_id == business_id,
+                ContentItem.status == ContentItemStatus.PUBLISHED,
+                ContentItem.published_at.is_not(None),
+                ContentItem.published_at >= start,
+                ContentItem.published_at <= end,
+            )
+            .order_by(ContentItem.published_at.asc())
+        )
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def recent_headlines(
+        self, business_id: uuid.UUID, *, days: int = 30, limit: int = 60
+    ) -> list[str]:
+        """What this business already said lately, for the duplicate check.
+
+        Rejected drafts are included on purpose: the owner turning a post down
+        is the strongest possible signal not to write it again next week.
+        """
+        since = utcnow() - timedelta(days=days)
+        stmt = (
+            select(ContentItem.headline, ContentItem.topic)
+            .where(
+                ContentItem.business_id == business_id,
+                ContentItem.created_at >= since,
+                ContentItem.status.in_(
+                    [
+                        ContentItemStatus.PUBLISHED,
+                        ContentItemStatus.APPROVED,
+                        ContentItemStatus.PENDING_REVIEW,
+                        ContentItemStatus.REJECTED,
+                    ]
+                ),
+            )
+            .order_by(ContentItem.created_at.desc())
+            .limit(limit)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return [line for line in (" ".join(filter(None, row)).strip() for row in rows) if line]
+
+    async def by_telegram_message(self, message_id: str) -> ContentItem | None:
+        """The item a channel message came from, by its Telegram message id."""
+        stmt = select(ContentItem).where(ContentItem.tg_message_id == str(message_id))
+        return (await self.session.execute(stmt)).scalars().first()
+
     async def by_ids(self, item_ids: list[uuid.UUID]) -> Sequence[ContentItem]:
         if not item_ids:
             return []

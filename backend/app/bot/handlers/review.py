@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.feedback import FeedbackAgent
 from app.bot import texts
-from app.bot.keyboards import BatchCB, ReviewCB
+from app.bot.keyboards import MENU_TEXTS, BatchCB, ReviewCB
 from app.bot.review import mark_decided, plan_list_text, send_item_for_review
 from app.bot.states import ReviewStates
 from app.bot.utils import friendly_error, parse_datetime, resolve_message_text
@@ -194,7 +194,7 @@ async def start_reschedule(
 # --------------------------------------------------------------------------- #
 # Edit / reschedule follow-ups (text OR voice)
 # --------------------------------------------------------------------------- #
-@router.message(ReviewStates.waiting_edit_instruction, ~F.text.startswith("/"))
+@router.message(ReviewStates.waiting_edit_instruction, ~F.text.startswith("/"), ~F.text.in_(MENU_TEXTS))
 async def apply_edit(
     message: Message,
     state: FSMContext,
@@ -228,6 +228,11 @@ async def apply_edit(
 
     if parsed.action == "reject":
         item.status = ContentItemStatus.REJECTED
+        # Same bookkeeping as the button. A rejection is a decision someone
+        # made, and without these it is the only decision the system cannot
+        # attribute or date.
+        item.reviewed_at = utcnow()
+        item.reviewed_by = message.from_user.id if message.from_user else None
         item.review_notes = instruction[:2000]
         await session.flush()
         await state.set_state(None)
@@ -256,7 +261,7 @@ async def apply_edit(
     )
 
 
-@router.message(ReviewStates.waiting_new_datetime, F.text)
+@router.message(ReviewStates.waiting_new_datetime, F.text, ~F.text.in_(MENU_TEXTS))
 async def apply_reschedule(
     message: Message, state: FSMContext, session: AsyncSession, admin: BusinessAdmin | None
 ) -> None:
@@ -323,9 +328,12 @@ async def reject_all(
         return
 
     rejected = 0
+    reviewer = callback.from_user.id if callback.from_user else None
     for item in plan.items:
         if item.status not in TERMINAL_ITEM_STATUSES:
             item.status = ContentItemStatus.REJECTED
+            item.reviewed_at = utcnow()
+            item.reviewed_by = reviewer
             rejected += 1
     await session.flush()
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -9,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.onboarding import OnboardingAgent
 from app.bot import texts
-from app.bot.keyboards import NavCB, main_menu, onboarding_keyboard
+from app.bot.keyboards import MENU_TEXTS, NavCB, main_menu, onboarding_keyboard
 from app.bot.states import OnboardingStates
 from app.bot.utils import friendly_error, is_command, resolve_message_text
 from app.core.logging import get_logger
@@ -23,20 +25,41 @@ router = Router(name="onboarding")
 FINISH_THRESHOLD = 0.7
 
 
-async def _resolve_business_id(state: FSMContext, admin: BusinessAdmin | None) -> str | None:
+async def _resolve_business_id(
+    state: FSMContext,
+    admin: BusinessAdmin | None,
+    admins: list[BusinessAdmin] | None = None,
+) -> str | None:
+    """Which business these answers belong to.
+
+    The stored id is preferred because a multi-business owner picks an active
+    one — but it lives in client-held FSM state, so it is only trusted when it
+    names a business the sender actually administers. Otherwise the knowledge
+    base written here could be someone else's.
+    """
     data = await state.get_data()
-    return data.get("active_business_id") or (str(admin.business_id) if admin else None)
+    stored = data.get("active_business_id")
+    if stored:
+        allowed = {str(a.business_id) for a in (admins or ([admin] if admin else []))}
+        if str(stored) in allowed:
+            return str(stored)
+        # A freshly created business is legitimate: the membership row exists
+        # but this request's `admins` was resolved before it was written.
+        if admin is None and not admins:
+            return str(stored)
+    return str(admin.business_id) if admin else None
 
 
-@router.message(OnboardingStates.waiting_answer, ~F.text.startswith("/"))
+@router.message(OnboardingStates.waiting_answer, ~F.text.startswith("/"), ~F.text.in_(MENU_TEXTS))
 async def handle_answer(
     message: Message,
     state: FSMContext,
     session: AsyncSession,
     bot: Bot,
     admin: BusinessAdmin | None,
+    admins: list[BusinessAdmin] | None = None,
 ) -> None:
-    business_id = await _resolve_business_id(state, admin)
+    business_id = await _resolve_business_id(state, admin, admins)
     if not business_id:
         await message.answer(texts.NOT_REGISTERED)
         await state.set_state(None)
@@ -83,9 +106,13 @@ async def handle_answer(
 
 @router.callback_query(OnboardingStates.waiting_answer, NavCB.filter(F.action == "skip"))
 async def skip_question(
-    callback: CallbackQuery, state: FSMContext, session: AsyncSession, admin: BusinessAdmin | None
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    admin: BusinessAdmin | None,
+    admins: list[BusinessAdmin] | None = None,
 ) -> None:
-    business_id = await _resolve_business_id(state, admin)
+    business_id = await _resolve_business_id(state, admin, admins)
     if not business_id:
         await callback.answer(texts.NOT_REGISTERED, show_alert=True)
         return
@@ -122,9 +149,13 @@ async def skip_question(
 
 @router.callback_query(NavCB.filter(F.action == "finish_onboarding"))
 async def finish_onboarding(
-    callback: CallbackQuery, state: FSMContext, session: AsyncSession, admin: BusinessAdmin | None
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    admin: BusinessAdmin | None,
+    admins: list[BusinessAdmin] | None = None,
 ) -> None:
-    business_id = await _resolve_business_id(state, admin)
+    business_id = await _resolve_business_id(state, admin, admins)
     await state.set_state(None)
     await callback.answer("✅")
     if not (business_id and callback.message):
@@ -133,6 +164,15 @@ async def finish_onboarding(
     import uuid
 
     knowledge = await KnowledgeBaseRepository(session).get_or_create(uuid.UUID(business_id))
+
+    # Queue the brand's 3D prop shelf. Six renders take a minute or so, which
+    # is a minute the owner should not spend watching a Telegram spinner — and
+    # nothing downstream blocks on it, so a failure here is invisible.
+    with contextlib.suppress(Exception):
+        from app.tasks.generation import render_brand_props
+
+        render_brand_props.delay(business_id)
+
     await callback.message.answer(
         texts.ONBOARDING_DONE.format(progress=OnboardingAgent.progress_text(knowledge)),
         reply_markup=main_menu(),

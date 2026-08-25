@@ -28,6 +28,69 @@ _ROBOTIC_PHRASES = (
     "i hope this helps",
 )
 
+#: Grammatically fine, completely empty. Every learning centre in the country
+#: writes these, so a caption built out of them says nothing a competitor could
+#: not copy verbatim — which is the whole failure mode of generated marketing
+#: copy. Functional CTAs ("hoziroq murojaat qiling") are deliberately absent:
+#: they do a job. These do not.
+_EMPTY_PHRASES = (
+    # sifat da'vosi, o'lchovsiz
+    "sifatli ta'lim",
+    "sifatli xizmat",
+    "malakali ustoz",
+    "malakali o'qituvchi",
+    "malakali mutaxassis",
+    "tajribali ustoz",
+    "tajribali o'qituvchi",
+    "professional darajada",
+    "yuqori saviyada",
+    "yuqori sifat",
+    "eng yaxshi markaz",
+    "eng zo'r",
+    "eng yaxshi natija",
+    # metodika, o'lchovsiz
+    "zamonaviy metodika",
+    "zamonaviy uslub",
+    "zamonaviy yondashuv",
+    "individual yondashuv",
+    "individual yondoshuv",
+    "samarali ta'lim",
+    "natijaga yo'naltirilgan",
+    "xalqaro standart",
+    "dunyo standart",
+    "global standart",
+    # narx, raqamsiz
+    "qulay narx",
+    "arzon narx",
+    "hamyonbop narx",
+    "maqbul narx",
+    # va'da
+    "kafolatlangan natija",
+    "natija kafolatlanadi",
+    "orzuingizni ro'yobga",
+    "orzular ushaladi",
+    "yorqin kelajak",
+    "kelajagingiz uchun",
+    "muvaffaqiyat kaliti",
+    "bilim - kuch",
+    "bilim — kuch",
+    "hech qachon kech emas",
+    # sun'iy shoshirish
+    "imkoniyatni boy bermang",
+    "imkoniyatni qo'ldan boy bermang",
+    "shoshiling",
+    "kutib turamiz",
+    # bo'sh keng gap
+    "keng imkoniyatlar",
+    "qulay sharoit",
+    "har tomonlama",
+    "bizda hammasi bor",
+    "bizning maqsadimiz",
+    "o'z ustingizda ishlang",
+    "yangi bosqich",
+    "birinchi qadam",
+)
+
 
 def normalize_apostrophes(text: str) -> str:
     for src, dst in _TRANSLIT.items():
@@ -75,6 +138,50 @@ def find_placeholders(text: str) -> list[str]:
 def find_robotic_phrases(text: str) -> list[str]:
     lowered = (text or "").lower()
     return [p for p in _ROBOTIC_PHRASES if p in lowered]
+
+
+#: The slice worth spending prompt tokens on. Naming forty phrases in the
+#: system prompt costs more than it prevents; six teaches the shape and the
+#: checker catches the rest. Membership is asserted so the two never drift.
+EMPTY_PHRASE_SAMPLE = (
+    "sifatli ta'lim",
+    "malakali ustozlar",
+    "zamonaviy metodika",
+    "individual yondashuv",
+    "qulay narxlarda",
+    "kafolatlangan natija",
+)
+assert all(
+    any(sample.startswith(known) for known in _EMPTY_PHRASES) for sample in EMPTY_PHRASE_SAMPLE
+), "EMPTY_PHRASE_SAMPLE ichida ro'yxatda yo'q ibora bor"
+
+
+#: Things that make a sentence checkable: a price, a date, a score, a count,
+#: a percentage, a time. Phone numbers and hashtags are stripped first — a
+#: contact line is not a fact about the offering.
+_CONTACT_NOISE_RE = re.compile(r"(\+?\d[\d\s\-()]{6,}\d|https?://\S+|#\S+|@\w+)")
+_CONCRETE_RE = re.compile(r"\d+([.,:]\d+)?\s*(%|foiz|so'm|ming|mln|yil|oy|kun|soat|daqiqa|ball)?")
+
+
+def find_concrete_details(text: str) -> list[str]:
+    """Numbers a reader can check, with contact details filtered out.
+
+    A caption may quote no knowledge-base fact and still be specific — «har
+    kuni 30 daqiqa listening» says something «samarali ta'lim» never will.
+    Treating those as fact-free would push every post toward a price list.
+    """
+    cleaned = _CONTACT_NOISE_RE.sub(" ", normalize_apostrophes(text or ""))
+    return [m.group(0).strip() for m in _CONCRETE_RE.finditer(cleaned) if m.group(0).strip()]
+
+
+def find_empty_phrases(text: str) -> list[str]:
+    """Generic marketing filler — true of every competitor, so worth nothing.
+
+    Apostrophes are normalised first: the same phrase arrives as `o'quv`,
+    `o‘quv` and `oʻquv` depending on which keyboard wrote it.
+    """
+    lowered = normalize_apostrophes(text or "").lower()
+    return [p for p in _EMPTY_PHRASES if p in lowered]
 
 
 def truncate_caption(text: str, limit: int, suffix: str = "…") -> str:

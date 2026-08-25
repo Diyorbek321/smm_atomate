@@ -250,3 +250,22 @@ def _brief():
     from app.agents.visual import VisualBrief
 
     return VisualBrief(card_text="Kuzgi qabul")
+
+
+class TestRealPhotoPreference:
+    """The top tier shows the real centre; lower tiers have no library yet."""
+
+    def test_only_pro_prefers_a_real_photograph(self):
+        from app.core.plans import capabilities_for
+
+        assert capabilities_for("start").prefers_real_photo is False
+        assert capabilities_for("standard").prefers_real_photo is False
+        assert capabilities_for("pro").prefers_real_photo is True
+
+    def test_it_can_be_granted_below_the_tier(self):
+        """A Standard client who has shot a photo library should benefit."""
+        from app.core.plans import capabilities_for
+
+        granted = capabilities_for("standard", {"prefers_real_photo": True})
+        assert granted.prefers_real_photo is True
+        assert granted.max_posts_per_week == 8      # nothing else moved

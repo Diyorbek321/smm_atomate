@@ -7,12 +7,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from celery import shared_task
 from sqlalchemy import select
 
-from celery import shared_task
-
 from app.agents.orchestrator import ContentPipeline
+from app.agents.video_editor import VideoEditorAgent, VideoEditRequest
 from app.bot.notifier import push_items_for_review, push_plan_summary
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.db.session import session_scope
 from app.models.enums import ContentPillar, ContentType, Platform
@@ -198,6 +199,75 @@ def send_pending_reviews(limit: int = 30) -> dict[str, Any]:
     return outcome
 
 
+@shared_task(name="app.tasks.generation.send_monthly_reports")
+def send_monthly_reports() -> dict[str, Any]:
+    """Last month's result to every owner, on the 1st, before the new brief.
+
+    Order matters: an owner who has just read that nine people wrote in reads
+    the footage request as an investment. The other way round it reads as a
+    chore.
+    """
+
+    async def _run() -> dict[str, Any]:
+        from app.bot.notifier import notify_admins
+        from app.services.client_report import build_report, render_telegram
+
+        async with session_scope() as session:
+            businesses = await BusinessRepository(session).list_active()
+            sent = 0
+            for business in businesses:
+                try:
+                    report = await build_report(session, business)
+                    if await notify_admins(session, business.id, render_telegram(report)):
+                        sent += 1
+                except Exception as exc:
+                    log.warning(
+                        "monthly_report_failed", business=str(business.id), error=str(exc)[:200]
+                    )
+            return {"businesses": len(businesses), "sent": sent}
+
+    outcome = run_async(_run())
+    log.info("monthly_reports_sent", **outcome)
+    return outcome
+
+
+@shared_task(name="app.tasks.generation.send_shooting_briefs")
+def send_shooting_briefs() -> dict[str, Any]:
+    """Ask every active owner for this month's footage, on the 1st.
+
+    Sent before the month's planning rather than after: a brief that arrives
+    once the calendar is already full gets read as extra homework, and the
+    footage it would have produced is what the plan needed in the first place.
+    """
+
+    async def _run() -> dict[str, Any]:
+        from app.bot.notifier import notify_admins
+        from app.repositories.business import KnowledgeBaseRepository
+        from app.services.brand_assets import own_footage
+        from app.services.shooting_brief import build_brief, render_telegram
+
+        async with session_scope() as session:
+            businesses = await BusinessRepository(session).list_active()
+            sent = 0
+            for business in businesses:
+                try:
+                    knowledge = await KnowledgeBaseRepository(session).get_or_create(business.id)
+                    brief = build_brief(
+                        business, knowledge, footage_on_hand=len(own_footage(business.id))
+                    )
+                    if await notify_admins(session, business.id, render_telegram(brief)):
+                        sent += 1
+                except Exception as exc:
+                    log.warning(
+                        "shooting_brief_failed", business=str(business.id), error=str(exc)[:200]
+                    )
+            return {"businesses": len(businesses), "sent": sent}
+
+    outcome = run_async(_run())
+    log.info("shooting_briefs_sent", **outcome)
+    return outcome
+
+
 @shared_task(name="app.tasks.generation.heartbeat")
 def heartbeat() -> dict[str, Any]:  # pragma: no cover - ops helper
     return {"ok": True, "at": utcnow().isoformat()}
@@ -252,6 +322,77 @@ def edit_uploaded_video(
         raise self.retry(exc=exc) from exc
 
 
+async def _transcribe_source(source: bytes) -> tuple[list[dict[str, Any]], float]:
+    """Whisper the raw upload, before anything has been cut out of it.
+
+    The subtitle pass inside ``edit_video`` transcribes the *finished* clip, so
+    its timestamps describe a timeline that does not exist yet. Deciding what
+    to keep needs the opposite: timings against the file as it was uploaded.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from app.services.transcription import get_transcriber
+    from app.services.video_editor import extract_audio, probe
+
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        raw = work / "source.mp4"
+        raw.write_bytes(source)
+
+        info = await probe(raw)
+        if not info.has_audio:
+            return [], info.duration
+
+        audio = work / "speech.m4a"
+        if not await extract_audio(raw, audio):
+            return [], info.duration
+
+        segments = await get_transcriber().transcribe_segments(
+            audio.read_bytes(), filename="speech.m4a", language="uz"
+        )
+        return list(segments), info.duration
+
+
+async def plan_cut(
+    session: Any, business: Any, source: bytes, *, topic: str = ""
+) -> list[tuple[float, float]] | None:
+    """What the video editor agent decided to keep, or None to trim silence.
+
+    None is not a failure signal so much as the default: the deterministic
+    silence trim is what this pipeline did before the agent existed, and every
+    way the agent can be unavailable lands back on it.
+    """
+    if not settings.use_video_editor_agent:
+        return None
+
+    try:
+        segments, duration = await _transcribe_source(source)
+    except Exception as exc:  # a cut is not worth failing an edit
+        log.warning("video_plan_transcribe_failed", error=str(exc)[:200])
+        return None
+
+    if not segments:
+        # Silent footage, or nothing recognised — there is nothing to reason
+        # about, and the agent would only answer with an empty plan.
+        return None
+
+    plan = await VideoEditorAgent(session=session).run(
+        VideoEditRequest(business=business, segments=segments, duration=duration, topic=topic)
+    )
+    if not plan.is_usable:
+        return None
+
+    log.info(
+        "video_cut_planned",
+        business=str(business.id),
+        kept=plan.total_seconds,
+        source=round(duration, 1),
+        dropped=len(plan.drop),
+    )
+    return [(segment.start, segment.end) for segment in plan.keep]
+
+
 async def run_video_edit(
     business_id: str, source_filename: str, *, caption: str = "", chat_id: int | None = None
 ) -> dict[str, Any]:
@@ -283,14 +424,17 @@ async def run_video_edit(
             logo = base64.b64decode(data_uri.split(",", 1)[1])
 
         contact = " · ".join(filter(None, [knowledge.phone or "", knowledge.address or ""]))
+        raw = source_path.read_bytes()
+        keep = await plan_cut(session, business, raw, topic=caption)
         video, poster, report = await edit_video(
-            source_path.read_bytes(),
+            raw,
             colours=colours,
             logo=logo,
             business_name=business.name,
             contact=contact,
             settings_=EditSettings(),
             language=str(business.language),
+            keep=keep,
         )
 
         stored = storage.save_bytes(video, prefix="edited", content_type="video/mp4")
@@ -389,3 +533,166 @@ async def _next_free_slot(session: Any, business: Any) -> datetime:
                 continue
             return candidate.astimezone(UTC)
     return (cursor + timedelta(days=1)).astimezone(UTC)
+
+
+@shared_task(name="app.tasks.generation.render_brand_props", bind=True, max_retries=1, default_retry_delay=600)
+def render_brand_props(self: Any, business_id: str, count: int = 6) -> dict[str, Any]:
+    """Fill a business's 3D prop shelf — once, when onboarding finishes.
+
+    Kinetic clips built only from type read as captions. One rendered object
+    per scene is what the reference work does, and generating them per business
+    (in the brand accent, on the shelf its topic looks up first) is what keeps
+    two clients from sharing a visual identity.
+
+    Best effort by design: the shelf being empty costs quality, never a clip.
+    """
+    from app.services.brand_props import ensure_props
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            from app.repositories.business import KnowledgeBaseRepository
+
+            knowledge = await KnowledgeBaseRepository(session).for_business(uuid.UUID(business_id))
+            colors = dict(knowledge.brand_colors) if knowledge and knowledge.brand_colors else {}
+            # `shelf_for` scans this for keywords, so what the business actually
+            # sells decides which objects it gets.
+            offerings = knowledge.key_offerings if knowledge else []
+            topic = " ".join(
+                str(item.get("name") or item.get("title") or "")
+                for item in offerings
+                if isinstance(item, dict)
+            )
+
+        paths = await ensure_props(
+            business_id,
+            accent=colors.get("accent") or "#4F8CFF",
+            topic=topic,
+            count=count,
+        )
+        return {"business_id": business_id, "props": len(paths)}
+
+    try:
+        return run_async(_run())
+    except Exception as exc:                      # a prop shelf is never worth a retry storm
+        log.warning("brand_props_task_failed", business=business_id, error=str(exc)[:300])
+        return {"business_id": business_id, "props": 0, "error": str(exc)[:200]}
+
+
+@shared_task(name="app.tasks.generation.render_promo_clip", bind=True, max_retries=1, default_retry_delay=180)
+def render_promo_clip(
+    self: Any,
+    business_id: str,
+    topic: str,
+    *,
+    pillar: str = "educational",
+    family: str | None = None,
+    seed: int = 0,
+    notify: bool = True,
+) -> dict[str, Any]:
+    """Write and render one browser-rendered promo clip.
+
+    The heavier of the two video paths: a real browser draws every frame, which
+    buys the blend modes, masks and split layouts Pillow cannot do cheaply. Use
+    it for hero pieces; :func:`render_kinetic_clip` still carries daily volume.
+    """
+    from app.agents.promo import PromoAgent
+    from app.models.enums import ContentPillar
+    from app.services.brand_assets import footage_library, prop_library
+    from app.services.promo import render_promo
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            from app.repositories.business import BusinessRepository, KnowledgeBaseRepository
+
+            business = await BusinessRepository(session).get(uuid.UUID(business_id))
+            if business is None:
+                raise ValueError(f"business {business_id} not found")
+            knowledge = await KnowledgeBaseRepository(session).for_business(business.id)
+            props = [str(path) for path in prop_library(business.id, topic)]
+            clips = [str(path) for path in footage_library(business.id)]
+            written = await PromoAgent(session=session).write(
+                business, knowledge, topic,
+                pillar=ContentPillar(pillar), family=family, props=props,
+                footage=clips[seed % len(clips)] if clips else None, seed=seed,
+            )
+
+        result = await render_promo(written.script, prefix=f"promo-{written.family}")
+        if notify:
+            async with session_scope() as session:
+                from app.bot.notifier import push_clip
+
+                await push_clip(session, uuid.UUID(business_id), str(result.video.path),
+                                caption=f"🎬 {topic}")
+        return {
+            "business_id": business_id,
+            "family": written.family,
+            "seconds": result.seconds,
+            "video": result.video.filename,
+            "cover": result.cover.filename if result.cover else None,
+            "issues": result.issues,
+        }
+
+    try:
+        return run_async(_run())
+    except Exception as exc:
+        log.warning("promo_clip_failed", business=business_id, error=str(exc)[:300])
+        raise self.retry(exc=exc) from exc
+
+
+@shared_task(name="app.tasks.generation.render_promo_carousel", bind=True, max_retries=1, default_retry_delay=180)
+def render_promo_carousel(
+    self: Any,
+    business_id: str,
+    topic: str,
+    *,
+    pillar: str = "educational",
+    family: str | None = None,
+    seed: int = 0,
+    notify: bool = True,
+) -> dict[str, Any]:
+    """The same authored families, exported as carousel slides instead of video.
+
+    Carousels are posted about as often as feed images here, so every layout
+    improvement should land in both places rather than only in the clips.
+    """
+    from app.agents.promo import PromoAgent
+    from app.models.enums import ContentPillar
+    from app.services.brand_assets import footage_library, prop_library
+    from app.services.promo import render_carousel
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            from app.repositories.business import BusinessRepository, KnowledgeBaseRepository
+
+            business = await BusinessRepository(session).get(uuid.UUID(business_id))
+            if business is None:
+                raise ValueError(f"business {business_id} not found")
+            knowledge = await KnowledgeBaseRepository(session).for_business(business.id)
+            props = [str(path) for path in prop_library(business.id, topic)]
+            clips = [str(path) for path in footage_library(business.id)]
+            written = await PromoAgent(session=session).write(
+                business, knowledge, topic,
+                pillar=ContentPillar(pillar), family=family, props=props,
+                footage=clips[seed % len(clips)] if clips else None, seed=seed,
+            )
+
+        result = await render_carousel(written.script, prefix=f"kar-{written.family}")
+        if notify:
+            async with session_scope() as session:
+                from app.bot.notifier import push_slides
+
+                await push_slides(session, uuid.UUID(business_id),
+                                  [str(slide.path) for slide in result.slides],
+                                  caption=f"🖼 {topic}")
+        return {
+            "business_id": business_id,
+            "family": written.family,
+            "slides": [slide.filename for slide in result.slides],
+            "issues": result.issues,
+        }
+
+    try:
+        return run_async(_run())
+    except Exception as exc:
+        log.warning("promo_carousel_failed", business=business_id, error=str(exc)[:300])
+        raise self.retry(exc=exc) from exc

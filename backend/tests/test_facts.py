@@ -201,7 +201,8 @@ class TestInjection:
 
         assert "Mental arifmetika" not in render_inline_block(self.FACTS)
 
-    def test_nothing_priced_means_no_block(self):
+    def test_nothing_priced_falls_back_to_named_offerings(self):
+        """No price in the base is not a reason to ship a post about nothing."""
         from app.agents.facts import collect_facts as collect
         from app.agents.facts import render_inline_block
 
@@ -210,7 +211,13 @@ class TestInjection:
             preferred_hashtags=[], banned_topics=[], usps=[], faq=[],
             teacher_profiles=[], success_stories=[],
         )
-        assert render_inline_block(collect(kb, "")) == ""
+        block = render_inline_block(collect(kb, ""))
+        assert "Ingliz tili" in block
+
+    def test_no_facts_at_all_means_no_block(self):
+        from app.agents.facts import render_inline_block
+
+        assert render_inline_block([]) == ""
 
     def test_the_injected_block_satisfies_the_check(self):
         """Whatever we append must pass the same test the model had to pass."""

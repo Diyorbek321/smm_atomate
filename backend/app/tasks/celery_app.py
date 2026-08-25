@@ -72,6 +72,19 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(day_of_week="sat", hour=10, minute=0),
         "options": {"queue": "generation"},
     },
+    # The 1st, in this order: what last month produced, then what this month
+    # needs. Reversed, the footage request reads as a chore instead of an
+    # investment.
+    "monthly-client-report": {
+        "task": "app.tasks.generation.send_monthly_reports",
+        "schedule": crontab(day_of_month="1", hour=9, minute=0),
+        "options": {"queue": "generation"},
+    },
+    "monthly-shooting-brief": {
+        "task": "app.tasks.generation.send_shooting_briefs",
+        "schedule": crontab(day_of_month="1", hour=9, minute=10),
+        "options": {"queue": "generation"},
+    },
     # Housekeeping.
     "cleanup-media": {
         "task": "app.tasks.maintenance.cleanup_media",

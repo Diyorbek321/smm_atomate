@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.onboarding import INTERVIEW_QUESTIONS, OnboardingAgent
 from app.bot import texts
-from app.bot.keyboards import BizCB, NavCB, business_picker, main_menu, onboarding_keyboard
+from app.bot.keyboards import MENU_TEXTS, BizCB, NavCB, business_picker, main_menu, onboarding_keyboard
 from app.bot.states import OnboardingStates
 from app.core.logging import get_logger
 from app.models.business import BusinessAdmin
@@ -28,10 +28,18 @@ async def cmd_start(
     session: AsyncSession,
     admins: list[BusinessAdmin],
     admin: BusinessAdmin | None,
+    may_register: bool = True,
 ) -> None:
     await state.clear()
 
     if not admins or admin is None:
+        if not may_register:
+            # The bot is public on purpose — that is where leads arrive. A
+            # stranger who says /start is a prospect, not a new tenant.
+            from app.bot.handlers.lead import start_lead_flow
+
+            await start_lead_flow(message, state, session)
+            return
         await state.set_state(OnboardingStates.waiting_business_name)
         await message.answer(texts.START_NEW_USER)
         return
@@ -53,9 +61,21 @@ async def cmd_start(
         )
 
 
-@router.message(OnboardingStates.waiting_business_name, F.text)
-async def create_business(message: Message, state: FSMContext, session: AsyncSession) -> None:
+@router.message(OnboardingStates.waiting_business_name, F.text, ~F.text.in_(MENU_TEXTS))
+async def create_business(
+    message: Message, state: FSMContext, session: AsyncSession, may_register: bool = True
+) -> None:
     """First contact: create the business, its KB and the owner membership."""
+    if not may_register:
+        # Reachable only by racing the state, but the state is client-held.
+        await state.clear()
+        log.warning(
+            "business_creation_refused",
+            user=message.from_user.id if message.from_user else None,
+        )
+        await message.answer(texts.NOT_REGISTERED)
+        return
+
     name = (message.text or "").strip()
     if len(name) < 2:
         await message.answer("Iltimos, biznes nomini to'liqroq yozing.")
@@ -86,8 +106,24 @@ async def create_business(message: Message, state: FSMContext, session: AsyncSes
 
 @router.callback_query(BizCB.filter(F.action == "select"))
 async def select_business(
-    callback: CallbackQuery, callback_data: BizCB, state: FSMContext, session: AsyncSession
+    callback: CallbackQuery,
+    callback_data: BizCB,
+    state: FSMContext,
+    session: AsyncSession,
+    admins: list[BusinessAdmin],
 ) -> None:
+    # Callback data is written by the client. Without this check a crafted
+    # `biz:select:<someone-else-uuid>` lands in `active_business_id`, and the
+    # onboarding handlers write to whatever business that points at.
+    if not any(a.business_id == callback_data.business_id for a in admins):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        log.warning(
+            "business_select_refused",
+            user=callback.from_user.id if callback.from_user else None,
+            business=str(callback_data.business_id),
+        )
+        return
+
     business = await BusinessRepository(session).get(callback_data.business_id)
     if business is None:
         await callback.answer("Topilmadi", show_alert=True)

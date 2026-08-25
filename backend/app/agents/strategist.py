@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
+from typing import Any
 
 from app.agents.base import BaseAgent, knowledge_context
 from app.agents.prompts import STRATEGIST_SYSTEM
@@ -104,6 +105,43 @@ class StrategyRequest:
     horizon_days: int = 7
     posts_count: int = 10
     extra_instructions: str = ""
+    #: What the last two months actually did — see
+    #: :meth:`ContentItemRepository.recent_performance`. Empty for a business
+    #: with nothing published yet, which is the honest state to plan from.
+    performance: dict[str, Any] = field(default_factory=dict)
+
+
+def _performance_block(performance: dict[str, Any]) -> str:
+    """Last two months, as the planner should see them.
+
+    Reactions are reported per pillar rather than per post: one post going wide
+    says little, a pillar consistently earning nothing says a lot. Topics are
+    listed so the plan stops re-covering what went out three weeks ago — the
+    old duplicate check only looked inside the plan being generated.
+    """
+    if not performance or not performance.get("published"):
+        return ""
+
+    lines = [f"OXIRGI 60 KUN: {performance['published']} ta post chiqdi."]
+    ranked = sorted(
+        performance.get("by_pillar", {}).items(),
+        key=lambda kv: (kv[1].get("avg_reactions") is None, -(kv[1].get("avg_reactions") or 0)),
+    )
+    for name, stats in ranked:
+        average = stats.get("avg_reactions")
+        measured = "o'lchanmagan" if average is None else f"o'rtacha {average} reaksiya"
+        lines.append(f"  {name}: {int(stats['posts'])} post · {measured}")
+    if len(ranked) > 1 and ranked[0][1].get("avg_reactions"):
+        lines.append(
+            f"Eng ko'p javob bergan ustun — {ranked[0][0]}. Ulushni o'zgartirma, "
+            "lekin shu ustundagi mavzularni kuchliroq ishla."
+        )
+
+    topics = performance.get("recent_topics") or []
+    if topics:
+        lines.append("YAQINDA CHIQQAN MAVZULAR (takrorlama, yangi burchak top):")
+        lines.append("  " + " · ".join(topics[:16]))
+    return "\n".join(lines)
 
 
 class StrategistAgent(BaseAgent):
@@ -207,6 +245,7 @@ class StrategistAgent(BaseAgent):
                         if kb and kb.banned_topics
                         else ""
                     ),
+                    _performance_block(request.performance),
                     (f"QO'SHIMCHA KO'RSATMA: {request.extra_instructions}" if request.extra_instructions else ""),
                     (
                         "Natijani JSON qaytar: theme, objectives (2-4 ta), slots (har biri day_offset, "

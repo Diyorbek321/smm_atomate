@@ -144,6 +144,129 @@ class TestEditorStaticChecks:
         issues = self._run(copy)
         assert not [i for i in issues if i.severity == "critical"]
 
+    # ---- fakt / bo'sh ibora / takror ---------------------------------- #
+
+    ADJECTIVES_ONLY = (
+        "Bizning markazda malakali ustozlar zamonaviy metodika asosida sifatli "
+        "ta'lim beradi. Qulay narxlarda, individual yondashuv bilan. "
+        "Batafsil: +998901234567"
+    )
+
+    def test_a_post_made_of_adjectives_is_critical(self):
+        """No number, no date, no name — the post is about nothing."""
+        copy = CopyOutput(
+            caption_tg=self.ADJECTIVES_ONLY,
+            caption_ig=self.ADJECTIVES_ONLY,
+            cta="+998901234567 ga qo'ng'iroq qiling",
+        )
+        issues = self._run(copy)
+        assert any(
+            i.severity == "critical" and "Tekshirsa bo'ladigan" in i.problem for i in issues
+        )
+
+    def test_a_phone_number_is_not_a_fact(self):
+        """Otherwise every contact line would satisfy the requirement."""
+        copy = CopyOutput(
+            caption_tg="Sifatli ta'lim va qulay narxlar. Bog'laning: +998901234567",
+            caption_ig="Sifatli ta'lim va qulay narxlar. Bog'laning: +998901234567",
+            cta="Qo'ng'iroq qiling",
+        )
+        assert any(i.severity == "critical" for i in self._run(copy))
+
+    def test_a_concrete_number_passes_without_the_knowledge_base_price(self):
+        """Requiring the price in every post would turn the feed into a list."""
+        text = (
+            "IELTS 7.0 olish uchun kuniga 30 daqiqa listening qiling. "
+            "Uch oyda natija ko'rinadi. Batafsil: +998901234567"
+        )
+        copy = CopyOutput(caption_tg=text, caption_ig=text, cta="Yozilish: +998901234567")
+        issues = self._run(copy)
+        assert not [i for i in issues if i.severity == "critical"]
+        # ...but not quoting the base is still worth a nudge.
+        assert any(i.severity == "minor" and "Bilim bazasi" in i.problem for i in issues)
+
+    def test_quoting_the_knowledge_base_price_leaves_no_fact_issue(self):
+        text = (
+            "IELTS intensiv guruhiga qabul ochildi — oyiga 600 000 so'm. "
+            "Sentabrda boshlaymiz. Batafsil: +998901234567"
+        )
+        copy = CopyOutput(caption_tg=text, caption_ig=text, cta="Yozilish: +998901234567")
+        issues = self._run(copy)
+        assert not [i for i in issues if "fakt" in i.problem.lower()]
+
+    def test_filler_piles_up_into_a_major_issue(self):
+        copy = CopyOutput(
+            caption_tg=self.ADJECTIVES_ONLY,
+            caption_ig=self.ADJECTIVES_ONLY,
+            cta="Qo'ng'iroq qiling",
+        )
+        issues = self._run(copy)
+        assert any(i.severity == "major" and "umumiy ibora" in i.problem for i in issues)
+
+    def test_a_headline_repeated_from_last_month_is_flagged(self):
+        text = "Sentabr guruhida 12 joy qoldi. Batafsil: +998901234567"
+        copy = CopyOutput(
+            headline="Sentabr guruhiga qabul boshlandi",
+            caption_tg=text,
+            caption_ig=text,
+            cta="Yozilish: +998901234567",
+        )
+        agent = EditorAgent()
+        request = EditorRequest(
+            business=make_business(),
+            knowledge=make_knowledge(),
+            copy=copy,
+            content_type=ContentType.FEED_POST,
+            topic="Sentabr qabuli",
+            deep_check=False,
+            recent_headlines=["Sentabr guruhiga qabul ochildi sentabr guruhi"],
+        )
+        issues = agent.static_checks(request)
+        # Similar enough for the reviewer to see, not identical enough to redo.
+        assert any(i.field == "headline" and i.severity == "major" for i in issues)
+
+    def test_a_near_identical_headline_is_critical_not_just_flagged(self):
+        """At this much overlap it is the same post — rewrite, do not annotate."""
+        text = "Sentabr guruhida 12 joy qoldi. Batafsil: +998901234567"
+        copy = CopyOutput(
+            headline="Sentabr guruhiga qabul boshlandi",
+            caption_tg=text,
+            caption_ig=text,
+            cta="Yozilish: +998901234567",
+        )
+        agent = EditorAgent()
+        request = EditorRequest(
+            business=make_business(),
+            knowledge=make_knowledge(),
+            copy=copy,
+            content_type=ContentType.FEED_POST,
+            topic="Sentabr qabuli",
+            deep_check=False,
+            recent_headlines=["Sentabr guruhiga qabul ochildi Sentabr qabuli"],
+        )
+        issues = agent.static_checks(request)
+        assert any(i.field == "headline" and i.severity == "critical" for i in issues)
+
+    def test_an_unrelated_headline_is_not_flagged_as_a_repeat(self):
+        text = "Ustozimiz Nodira 8.0 oldi. Batafsil: +998901234567"
+        copy = CopyOutput(
+            headline="Ustozimiz IELTS 8.0 oldi",
+            caption_tg=text,
+            caption_ig=text,
+            cta="Yozilish: +998901234567",
+        )
+        agent = EditorAgent()
+        request = EditorRequest(
+            business=make_business(),
+            knowledge=make_knowledge(),
+            copy=copy,
+            content_type=ContentType.FEED_POST,
+            topic="Ustoz yutug'i",
+            deep_check=False,
+            recent_headlines=["Sentabr guruhiga qabul ochildi"],
+        )
+        assert not [i for i in agent.static_checks(request) if i.field == "headline"]
+
     def test_empty_caption_is_critical(self):
         issues = self._run(CopyOutput(caption_tg="", caption_ig="", cta="Yozing"))
         assert any(i.severity == "critical" for i in issues)

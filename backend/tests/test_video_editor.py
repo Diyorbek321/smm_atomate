@@ -466,3 +466,84 @@ class TestCaptionLayout:
     def test_blank_tokens_are_skipped(self):
         words = [{"word": " ", "start": 0, "end": 1}, {"word": "salom", "start": 1, "end": 2}]
         assert sum(len(line) for chunk in ve.layout_words(words) for line in chunk) == 1
+
+
+class TestCaptionsAreDesignedNotSubtitled:
+    """The caption is the design, not a subtitle track under it."""
+
+    def test_the_font_ships_with_the_app(self):
+        """Naming a host font means libass resolves it against fontconfig and
+        quietly draws whatever it finds — which is what used to happen."""
+        from app.services import video_editor as ve
+
+        assert ve.CAPTION_FONT_FILE.exists()
+        assert ve.CAPTION_FONT_FILE.parent == ve.CAPTION_FONT_DIR
+
+    def test_libass_is_pointed_at_that_directory(self):
+        import inspect
+
+        from app.services import video_editor as ve
+
+        assert "fontsdir" in inspect.getsource(ve.burn_subtitles)
+
+    def test_captions_clear_the_platform_ui(self):
+        from app.services import video_editor as ve
+
+        assert ve.CAPTION_BOTTOM >= 400
+
+    def test_captions_are_display_sized(self):
+        from app.services import video_editor as ve
+
+        assert ve.CAPTION_FONT_SIZE >= 120
+
+    def test_measurement_is_calibrated_to_what_libass_draws(self):
+        """Pillow and libass disagree about what a font size means; measuring
+        one and rendering the other wraps every line in the wrong place."""
+        from app.services import video_editor as ve
+
+        assert 0 < ve.CAPTION_RENDER_RATIO < 1
+
+    def test_a_typical_line_fills_most_of_the_box(self):
+        from app.services import video_editor as ve
+
+        width = ve.caption_width("Birinchi qism to'liq 5")
+        assert 0.6 < width / ve.CAPTION_BOX < 1.0
+
+
+class TestPunchIn:
+    """A cut without a framing change is a twitch, not an edit."""
+
+    def test_framing_alternates_across_cuts(self):
+        from app.services.video_editor import PUNCH_ZOOM, punch_levels
+
+        assert punch_levels(4, allowed=True) == [1.0, PUNCH_ZOOM, 1.0, PUNCH_ZOOM]
+
+    def test_the_clip_opens_wide(self):
+        """Context first; a close-up on frame one tells the viewer nothing."""
+        from app.services.video_editor import punch_levels
+
+        assert punch_levels(3, allowed=True)[0] == 1.0
+
+    def test_nothing_is_cropped_when_punching_is_refused(self):
+        from app.services.video_editor import punch_levels
+
+        assert set(punch_levels(5, allowed=False)) == {1.0}
+
+    def test_a_single_take_gets_no_invented_cut(self):
+        from app.services.video_editor import trim_filter
+
+        graph = trim_filter([(0.0, 8.0)], with_audio=True, punch=True)
+        assert "crop=" not in graph
+
+    def test_segments_are_normalised_so_concat_accepts_them(self):
+        """Cropped and uncropped spans differ in size; concat refuses that."""
+        from app.services.video_editor import WIDTH, trim_filter
+
+        graph = trim_filter([(0.0, 2.0), (3.0, 5.0)], with_audio=False, punch=True)
+        assert graph.count(f"scale={WIDTH}:-2") == 2
+
+    def test_narrow_footage_is_left_alone(self):
+        """Cropping something already upscaled buys framing with softness."""
+        from app.services.video_editor import PUNCH_MIN_WIDTH, WIDTH
+
+        assert PUNCH_MIN_WIDTH > WIDTH

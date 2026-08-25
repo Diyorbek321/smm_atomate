@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiogram import BaseMiddleware
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, TelegramObject, User
 
 from app.core.logging import get_logger
@@ -69,7 +70,28 @@ class AdminContextMiddleware(BaseMiddleware):
         active = await self._active(admins, data)
         data["admin"] = active
         data["business"] = active.business if active else None
+        data["may_register"] = self._may_register(user)
         return await handler(event, data)
+
+    @staticmethod
+    def _may_register(user: User | None) -> bool:
+        """Whether this account may create a NEW business from the bot.
+
+        Membership authorises operating a business; it does not authorise
+        conjuring one. Without this, any stranger who finds the bot becomes the
+        owner of a fresh business and starts spending the account's generation
+        budget — and the bot is meant to be public, because that is where leads
+        come from.
+
+        An empty `TELEGRAM_ADMIN_IDS` keeps the old open behaviour, which is
+        what local development and the test suite expect.
+        """
+        from app.core.config import settings
+
+        allowlist = settings.admin_ids
+        if not allowlist:
+            return True
+        return user is not None and user.id in allowlist
 
     @staticmethod
     async def _active(admins: list[BusinessAdmin], data: dict[str, Any]) -> BusinessAdmin | None:
@@ -83,6 +105,34 @@ class AdminContextMiddleware(BaseMiddleware):
                     if str(admin.business_id) == str(stored):
                         return admin
         return admins[0]
+
+
+class MenuResetMiddleware(BaseMiddleware):
+    """A menu button ends whatever flow the sender was in.
+
+    The persistent keyboard sits under every prompt, so "which topic?" is
+    always one tap away from "📊 Holat". The handlers now refuse to swallow a
+    button label, but refusing is only half the answer: without this the
+    sender still holds `waiting_topic`, and the next thing they type — a real
+    topic or not — is consumed by a flow they thought they had left.
+
+    Done here rather than in seven handlers because the next button added
+    would be the one nobody remembered to fix.
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        from app.bot.keyboards import MENU_TEXTS
+
+        state: FSMContext | None = data.get("state")
+        text = getattr(event, "text", None)
+        if state is not None and text in MENU_TEXTS and await state.get_state() is not None:
+            await state.set_state(None)
+        return await handler(event, data)
 
 
 class LoggingMiddleware(BaseMiddleware):

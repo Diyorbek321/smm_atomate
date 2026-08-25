@@ -19,11 +19,12 @@ from app.models.business import Business
 from app.models.enums import ContentPillar, ContentType
 from app.models.knowledge_base import KnowledgeBase
 from app.schemas.content import CopyOutput, CopyOutputStrict
+from app.services.brand_kit import kit_for
 from app.utils.text import (
     IG_CAPTION_LIMIT,
-    dedupe_phone,
     TG_MESSAGE_LIMIT,
     append_block,
+    dedupe_phone,
     normalize_apostrophes,
     normalize_hashtags,
     strip_markdown_fences,
@@ -154,6 +155,10 @@ class CopywriterAgent(BaseAgent):
             blocks.append("BREND HASHTAGLAR (birinchi bo'lib qo'y): " + " ".join(kb.preferred_hashtags[:5]))
         if kb and kb.banned_topics:
             blocks.append("TEGMA: " + ", ".join(kb.banned_topics))
+        # The brand's own voice, above the house rules in the system prompt:
+        # `casual` cannot tell a law firm from a bakery, and this can.
+        if kb and (voice := kit_for(kb.brand_kit).voice.prompt_block()):
+            blocks.append(voice)
         if request.previous_caption:
             blocks.append(
                 "AVVALGI VARIANT (uni takrorlama, yaxshila):\n" + request.previous_caption[:1500]

@@ -26,7 +26,15 @@ from typing import Any
 
 from app.core.exceptions import ConfigurationError, ProviderError, PublishError
 from app.core.logging import get_logger
-from app.services.encoding import audio_args, intermediate_video_args, video_args
+from app.services.encoding import (
+    LOUDNESS_RANGE,
+    LOUDNESS_TARGET,
+    TRUE_PEAK,
+    audio_args,
+    intermediate_video_args,
+    loudnorm_filter,
+    video_args,
+)
 from app.services.video import ffmpeg_path
 
 log = get_logger(__name__)
@@ -36,18 +44,33 @@ FPS = 30
 #: Caption geometry. The box is measured, not guessed: a character count
 #: cannot know that "MMM" is twice "iii", and ASS WrapStyle 2 does not wrap on
 #: its own — anything too wide simply runs off the side of the frame.
-CAPTION_FONT = "DejaVu Sans"
-CAPTION_FONT_SIZE = 64
+#: Captions are drawn from a font shipped with the app, not from whatever the
+#: host happens to have. The old default named "DejaVu Sans": the file is in
+#: the image, but it is not registered with fontconfig, so Pillow measured it
+#: by path while libass — which resolves by *name* — silently fell back to
+#: Liberation. Every line was laid out against a font it was not drawn in.
+CAPTION_FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "promo" / "fonts"
+CAPTION_FONT_FILE = CAPTION_FONT_DIR / "anton.ttf"
+CAPTION_FONT = "Anton"
+#: 64px on a 1080-wide frame reads as a subtitle track. Short-form captions are
+#: display type: large, high-contrast, and above the platform's own UI.
+CAPTION_FONT_SIZE = 140
+
+#: libass renders this font narrower than Pillow measures it, by a factor
+#: measured rather than derived: Anton's ascent+descent (140 at em 92) makes
+#: the two disagree about what "size" means, and the obvious 92/140 correction
+#: does not match what libass actually draws. Both scale linearly with size, so
+#: one constant holds at any font size — but it is specific to this font file,
+#: and changing the font means measuring again.
+#:
+#: Without it every line is measured ~1.7x too wide, wraps far too early, and
+#: the captions end up half the width they were designed for.
+CAPTION_RENDER_RATIO = 0.576
 CAPTION_MARGIN = 90
-CAPTION_BOTTOM = 320
-CAPTION_OUTLINE = 5
+CAPTION_BOTTOM = 420
+CAPTION_OUTLINE = 7
 CAPTION_BOX = WIDTH - 2 * CAPTION_MARGIN - 2 * CAPTION_OUTLINE - 2
 CAPTION_LINES = 2
-#: Social feeds normalise what they receive to about -14 LUFS. Delivering
-#: -16 is not "safer" — it just arrives quieter than everything around it.
-LOUDNESS_TARGET = -14.0
-TRUE_PEAK = -1.5
-LOUDNESS_RANGE = 11
 #: afftdn defaults to -50 dB; the -24 this used to run at treats far more of
 #: the signal as noise, which is what makes phone speech sound underwater.
 NOISE_FLOOR_DB = -32
@@ -192,12 +215,62 @@ def keep_segments(duration: float, silences: list[tuple[float, float]]) -> list[
     return segments
 
 
-def trim_filter(segments: list[tuple[float, float]], *, with_audio: bool) -> str:
+def clamp_segments(keep: list[tuple[float, float]], duration: float) -> list[tuple[float, float]]:
+    """Fit a cut somebody else planned onto the file we actually have.
+
+    The plan is written against a transcript, and a transcript's last timestamp
+    routinely lands a fraction past the end of the media. Segments are clipped
+    rather than dropped so one loose end does not cost the whole take.
+    """
+    if duration <= 0:
+        return []
+
+    clamped: list[tuple[float, float]] = []
+    for start, end in keep:
+        start = max(0.0, min(start, duration))
+        end = max(0.0, min(end, duration))
+        if end - start >= MIN_SEGMENT_SEC:
+            clamped.append((round(start, 2), round(end, 2)))
+    return clamped
+
+
+#: How far a punched-in shot crops. Enough to read as a different framing,
+#: little enough that the two shots still look like the same setup.
+PUNCH_ZOOM = 1.12
+
+#: Only punch in when the source has pixels to spare — cropping footage that is
+#: already being upscaled to 1080 wide trades a framing change for visible
+#: softness, which is a bad trade.
+PUNCH_MIN_WIDTH = int(WIDTH * 1.1)
+
+
+def punch_levels(count: int, *, allowed: bool) -> list[float]:
+    """A zoom factor per segment: wide, in, wide, in…
+
+    Cutting without changing the framing is a jump cut in the bad sense — the
+    subject twitches in place. Alternating the crop is what makes the same cut
+    read as an edit. The clip opens wide, because the first thing a viewer
+    needs is context, not a close-up.
+    """
+    if not allowed:
+        return [1.0] * count
+    return [1.0 if index % 2 == 0 else PUNCH_ZOOM for index in range(count)]
+
+
+def trim_filter(
+    segments: list[tuple[float, float]], *, with_audio: bool, punch: bool = False
+) -> str:
     """filter_complex that concatenates the kept spans back together."""
     parts: list[str] = []
+    zooms = punch_levels(len(segments), allowed=punch)
     for index, (start, end) in enumerate(segments):
+        zoom = zooms[index]
+        crop = (
+            f",crop=iw/{zoom:.3f}:ih/{zoom:.3f}" if zoom > 1.0 else ""
+        )
         parts.append(
-            f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS[v{index}];"
+            f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS{crop}"
+            f",scale={WIDTH}:-2[v{index}];"
         )
         if with_audio:
             parts.append(
@@ -403,16 +476,18 @@ def caption_width(text: str) -> float:
     global _measurer
     if _measurer is None:
         try:
-            from PIL import Image, ImageDraw
-
-            from app.services.video import _font
+            from PIL import Image, ImageDraw, ImageFont
 
             draw = ImageDraw.Draw(Image.new("L", (8, 8)))
-            font = _font(CAPTION_FONT_SIZE, bold=True)
-            _measurer = lambda value: float(draw.textlength(value, font=font))  # noqa: E731
+            # The same file libass is pointed at — measuring one font and
+            # rendering another is how a caption ends up off the side.
+            font = ImageFont.truetype(str(CAPTION_FONT_FILE), CAPTION_FONT_SIZE)
+            _measurer = lambda value: float(  # noqa: E731
+                draw.textlength(value, font=font)) * CAPTION_RENDER_RATIO
         except Exception as exc:
             log.warning("caption_measure_unavailable", error=str(exc)[:200])
-            _measurer = lambda value: len(value) * CAPTION_FONT_SIZE * 0.58  # noqa: E731
+            _measurer = lambda value: (  # noqa: E731
+                len(value) * CAPTION_FONT_SIZE * 0.58 * CAPTION_RENDER_RATIO)
     return _measurer(text)
 
 
@@ -650,7 +725,13 @@ async def normalise(
     audio_chain = audio_filter(measured) if (with_audio and settings_.clean_audio) else "anull"
 
     if segments:
-        graph = trim_filter(segments, with_audio=with_audio)
+        # Punch in on alternate cuts, but only where there are cuts to punch on
+        # and pixels to spare. One long take gets no invented cut, and footage
+        # already being upscaled is not cropped further.
+        punch = len(segments) > 1 and info.width >= PUNCH_MIN_WIDTH
+        if len(segments) > 1 and not punch:
+            report.skipped.append(f"punch-in: manba tor ({info.width}px)")
+        graph = trim_filter(segments, with_audio=with_audio, punch=punch)
         graph += f";[tv]{','.join(video_chain)}[v]"
         if with_audio:
             graph += f";[ta]{audio_chain},aresample={AUDIO_RATE}[a]"
@@ -676,10 +757,13 @@ async def normalise(
 
 async def burn_subtitles(source: Path, target: Path, ass_path: Path) -> None:
     escaped = str(ass_path).replace(":", r"\:")
+    fonts = str(CAPTION_FONT_DIR).replace(":", r"\:")
     await _run(
         [
             _binary(), "-y", "-hide_banner", "-i", str(source),
-            "-vf", f"subtitles='{escaped}'",
+            # fontsdir, or libass resolves the style's font name against the
+            # host's fontconfig and quietly draws something else.
+            "-vf", f"subtitles='{escaped}':fontsdir='{fonts}'",
             *intermediate_video_args(fps=FPS),
             "-c:a", "copy", "-movflags", "+faststart", str(target),
         ],
@@ -693,8 +777,12 @@ async def add_music(source: Path, target: Path, music: Path, *, speech: bool) ->
         graph = (
             "[1:a]volume=0.30,afade=t=out:st=0:d=0[bed0];"
             "[bed0][0:a]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=400[bed];"
-            "[0:a][bed]amix=inputs=2:duration=first:dropout_transition=0,"
-            f"aresample={AUDIO_RATE}[a]"
+            # normalize=0 is load-bearing: amix defaults to scaling every input
+            # by 1/n, so mixing a bed under speech that was just normalised to
+            # -14 LUFS silently drops it ~6 dB. The clip then ships at about
+            # -23 — half the loudness of everything around it in the feed.
+            "[0:a][bed]amix=inputs=2:normalize=0:duration=first:dropout_transition=0,"
+            f"alimiter=limit=0.94,aresample={AUDIO_RATE}[a]"
         )
     else:
         graph = f"[1:a]volume=0.55,aresample={AUDIO_RATE}[a]"
@@ -762,7 +850,14 @@ async def add_brand_frames(
         audio_pieces.append("[outroa]")
 
     interleaved = "".join(v + a for v, a in zip(video_pieces, audio_pieces, strict=True))
-    parts.append(f"{interleaved}concat=n={len(video_pieces)}:v=1:a=1[v][a]")
+    # Normalise *after* the concat, not before: the brand cards, the ducked bed
+    # and the speech are three different levels, and the delivered file is what
+    # the feed measures. Doing it earlier means the number the system promises
+    # and the number it ships are different.
+    parts.append(
+        f"{interleaved}concat=n={len(video_pieces)}:v=1:a=1[v][mixed];"
+        f"[mixed]{loudnorm_filter()}[a]"
+    )
 
     command += [
         "-filter_complex", ";".join(parts),
@@ -869,11 +964,18 @@ async def edit_video(
     contact: str = "",
     settings_: EditSettings | None = None,
     language: str = "uz",
+    keep: list[tuple[float, float]] | None = None,
 ) -> tuple[bytes, bytes | None, EditReport]:
     """Run the whole edit. Returns ``(mp4, poster_jpg, report)``.
 
     Individual stages fail soft: a missing transcript, an unusable logo or a
     music failure is recorded in the report and the edit continues.
+
+    ``keep`` is a cut somebody else decided — normally
+    :class:`app.agents.video_editor.VideoEditorAgent`, which reads the
+    transcript and drops repetition and digression, not just silence. Given
+    one, silence detection is skipped entirely: the two answer the same
+    question and the transcript-aware answer is the better one.
     """
     options = settings_ or EditSettings()
     report = EditReport()
@@ -888,16 +990,22 @@ async def edit_video(
         report.source_seconds = round(info.duration, 2)
 
         segments: list[tuple[float, float]] = []
-        if options.trim_silence and info.has_audio:
+        if keep:
+            segments = clamp_segments(keep, info.duration)
+            if segments:
+                report.done("planned cut")
+            else:
+                report.skip("planned cut", "the plan does not fit the file")
+        elif options.trim_silence and info.has_audio:
             try:
                 segments = keep_segments(info.duration, await detect_silences(raw))
             except PublishError as exc:
                 report.skip("trim", str(exc)[:80])
-            if segments:
-                kept = sum(end - start for start, end in segments)
-                report.trimmed_seconds = round(max(0.0, info.duration - kept), 2)
-            else:
+            if not segments:
                 report.skip("trim", "nothing worth cutting")
+        if segments:
+            kept = sum(end - start for start, end in segments)
+            report.trimmed_seconds = round(max(0.0, info.duration - kept), 2)
         if not info.has_audio:
             report.skip("audio", "the footage has no sound")
 

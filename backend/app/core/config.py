@@ -149,6 +149,41 @@ class Settings(BaseSettings):
     #: Below this the render is attempted once more; the better of the two wins.
     visual_qc_min_score: int = 7
 
+    # --- Second-layer agents ---------------------------------------------
+    #: These sit above the agents that already existed and hand them a brief;
+    #: each one is a separate LLM call, so they are switchable per deployment.
+    #
+    #: Once per plan (weekly) — decides the commercial angle the strategist
+    #: then turns into dates. Cheap at this cadence, so it defaults on.
+    use_marketolog_agent: bool = True
+    #: Per post: rewrites the first line after the copy is approved.
+    use_hook_agent: bool = True
+    #: Per post: decides the card composition before the visual agent renders.
+    use_designer_agent: bool = True
+    #: The two per-post agents together add roughly 15-20% to the cost of a
+    #: post (four LLM calls become six). Turn them off first when a provider
+    #: budget bites.
+    #
+    #: Once per plan (weekly) — reads what the last month produced and earned,
+    #: and hands its recommendations to the marketolog. Off when the marketolog
+    #: is off: nothing downstream would read the report.
+    use_analyst_agent: bool = True
+    #: How many days of production the analyst reads. A month is the shortest
+    #: window that contains enough posts to compare pillars at all.
+    analyst_window_days: int = 30
+    #: On ingest — mines checkable facts out of what the owner sent and appends
+    #: them to the knowledge base's notes. One extra call per *document*; short
+    #: chat messages skip it (see `research_min_chars`).
+    use_researcher_agent: bool = True
+    #: Free-form text shorter than this is a chat reply, not a source worth
+    #: mining; onboarding's structured extraction already handles it.
+    research_min_chars: int = 400
+    #: Per edited video — reads the transcript and decides which parts survive,
+    #: instead of keeping whatever is not silence. Costs one LLM call and one
+    #: extra Whisper pass over the source; falls back to silence-trim on any
+    #: failure.
+    use_video_editor_agent: bool = True
+
     # --- Behaviour -------------------------------------------------------
     default_timezone: str = "Asia/Tashkent"
     default_language: str = "uz"

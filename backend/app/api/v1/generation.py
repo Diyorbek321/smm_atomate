@@ -214,6 +214,62 @@ async def task_status(task_id: str, _: AuthDep) -> APIResponse[dict]:
         return APIResponse.ok({"task_id": task_id, "state": "UNKNOWN", "error": str(exc)[:200]})
 
 
+@router.post("/promo", response_model=APIResponse[dict])
+async def generate_promo(
+    payload: dict, session: SessionDep, _: AuthDep
+) -> APIResponse[dict]:
+    """Render a browser-drawn promo clip from one of the authored families.
+
+    Always queued: a real browser draws every frame, so even a short clip takes
+    longer than a request should wait. `family` forces a specific layout;
+    omitted, it is chosen from `pillar`.
+    """
+    return await _queue_promo(payload, session, "app.tasks.generation.render_promo_clip",
+                              "Klip navbatga qo'yildi")
+
+
+@router.post("/promo-carousel", response_model=APIResponse[dict])
+async def generate_promo_carousel(
+    payload: dict, session: SessionDep, _: AuthDep
+) -> APIResponse[dict]:
+    """The same families exported as carousel slides rather than video."""
+    return await _queue_promo(payload, session, "app.tasks.generation.render_promo_carousel",
+                              "Karusel navbatga qo'yildi")
+
+
+async def _queue_promo(
+    payload: dict, session: SessionDep, task: str, queued_message: str
+) -> APIResponse[dict]:
+    from app.core.exceptions import ValidationError
+    from app.services.promo_families import FAMILIES
+
+    raw_business = str(payload.get("business_id", "")).strip()
+    topic = str(payload.get("topic", "")).strip()
+    if not raw_business or not topic:
+        raise ValidationError("`business_id` va `topic` majburiy")
+
+    family = str(payload.get("family", "")).strip() or None
+    if family and family not in FAMILIES:
+        raise ValidationError(f"Noma'lum shablon «{family}». Mavjud: {', '.join(FAMILIES)}")
+    pillar = str(payload.get("pillar", "educational")).strip()
+
+    business_id = uuid.UUID(raw_business)
+    business = await BusinessRepository(session).get_full_or_404(business_id)
+    if not business.capabilities.video:
+        raise ValidationError(
+            f"Promo klip «{business.plan}» tarifiga kirmaydi — Pro tarifi kerak"
+        )
+
+    task_id = _enqueue(task, str(business_id), topic=topic, pillar=pillar,
+                       family=family, seed=int(payload.get("seed", 0)))
+    if not task_id:
+        raise ValidationError("Navbat mavjud emas — keyinroq urinib ko'ring")
+    return APIResponse.ok({
+        "task_id": task_id, "status": "queued", "family": family or f"({pillar} bo'yicha)",
+        "message": f"{queued_message} — /generate/task/{{id}} orqali kuzating",
+    })
+
+
 @router.post("/kinetic", response_model=APIResponse[dict])
 async def generate_kinetic(
     payload: dict, session: SessionDep, _: AuthDep

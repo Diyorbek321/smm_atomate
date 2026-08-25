@@ -18,7 +18,7 @@ from aiogram.client.session.base import BaseSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import TelegramMethod
-from aiogram.types import CallbackQuery, Chat, Message, Update, User
+from aiogram.types import CallbackQuery, Chat, Message, Update, User, Video
 
 from app.bot.keyboards import BatchCB, ReviewCB
 from app.models.business import Business, BusinessAdmin
@@ -32,6 +32,7 @@ from app.models.enums import (
     ContentPlanStatus,
     ContentType,
     Language,
+    Plan,
     Platform,
     ToneOfVoice,
 )
@@ -138,6 +139,29 @@ def make_update(user_id: int, text: str, update_id: int = 1) -> Update:
             chat=Chat(id=user_id, type="private"),
             from_user=User(id=user_id, is_bot=False, first_name="Owner"),
             text=text,
+        ),
+    )
+
+
+def make_video_update(
+    user_id: int, update_id: int = 1, *, duration: int = 12, size: int = 2 * 1024 * 1024
+) -> Update:
+    return Update(
+        update_id=update_id,
+        message=Message(
+            message_id=update_id,
+            date=datetime.now(UTC),
+            chat=Chat(id=user_id, type="private"),
+            from_user=User(id=user_id, is_bot=False, first_name="Owner"),
+            video=Video(
+                file_id=f"vid-{update_id}",
+                file_unique_id=f"u{update_id}",
+                width=1080,
+                height=1920,
+                duration=duration,
+                file_size=size,
+                file_name="dars.mp4",
+            ),
         ),
     )
 
@@ -596,3 +620,125 @@ class TestFreeformKnowledge:
         await dispatcher.feed_update(bot, make_update(owner_id, "📊 Holat"))
         # Routed to /status, not to the knowledge ingester.
         assert owned_business.name in session_calls.texts()[-1]
+
+
+class TestFootageShelf:
+    """`/footage` stocks the library the person-on-screen families need."""
+
+    @pytest.fixture
+    def shelf_root(self, tmp_path, monkeypatch):
+        """Point the media storage at a throwaway root for this test."""
+        from app.services.storage import MediaStorage
+
+        monkeypatch.setattr("app.services.storage._storage", MediaStorage(tmp_path))
+        return tmp_path
+
+    @pytest.fixture
+    async def pro_business(self, session, owned_business) -> Business:
+        owned_business.plan = Plan.PRO
+        await session.commit()
+        return owned_business
+
+    @pytest.fixture
+    def stub_download(self, monkeypatch):
+        async def fake_download(bot: Bot, file_id: str) -> bytes:
+            return b"fake-mp4-bytes"
+
+        monkeypatch.setattr("app.bot.handlers.video._download", fake_download)
+
+    async def test_command_opens_the_shelf(
+        self, owner_id: int, dispatcher, bot, session_calls, shelf_root, pro_business
+    ):
+        await dispatcher.feed_update(bot, make_update(owner_id, "/footage"))
+        assert "Video kadr javoni" in session_calls.texts()[-1]
+
+    async def test_a_clip_is_stored_on_the_shelf(
+        self, owner_id: int, dispatcher, bot, session_calls, shelf_root, pro_business, stub_download
+    ):
+        from app.services.brand_assets import own_footage
+
+        await dispatcher.feed_update(bot, make_update(owner_id, "/footage"))
+        await dispatcher.feed_update(bot, make_video_update(owner_id, update_id=2))
+
+        clips = own_footage(pro_business.id)
+        assert len(clips) == 1
+        assert clips[0].suffix == ".mp4"
+        assert clips[0].read_bytes() == b"fake-mp4-bytes"
+        assert "javonga qo'shildi" in session_calls.texts()[-1]
+
+    async def test_a_clip_outside_the_shelf_still_goes_to_the_editor(
+        self, owner_id: int, dispatcher, bot, shelf_root, pro_business, stub_download, monkeypatch
+    ):
+        """No `/footage` first — the video is a post, not library material."""
+        from app.services.brand_assets import own_footage
+
+        queued: list[str] = []
+        monkeypatch.setattr(
+            "app.tasks.generation.edit_uploaded_video.delay",
+            lambda *args, **kwargs: queued.append(args[0]),
+        )
+
+        await dispatcher.feed_update(bot, make_video_update(owner_id, update_id=3))
+
+        assert queued == [str(pro_business.id)]
+        assert own_footage(pro_business.id) == []
+
+    async def test_text_while_the_shelf_is_open_is_not_ingested(
+        self, owner_id: int, dispatcher, bot, session_calls, shelf_root, pro_business
+    ):
+        await dispatcher.feed_update(bot, make_update(owner_id, "/footage"))
+        await dispatcher.feed_update(bot, make_update(owner_id, "narxlar 400 ming", update_id=4))
+
+        assert "faqat video" in session_calls.texts()[-1]
+
+    async def test_a_full_shelf_refuses_more(
+        self, owner_id: int, dispatcher, bot, session_calls, shelf_root, pro_business,
+        stub_download, monkeypatch,
+    ):
+        monkeypatch.setattr("app.bot.handlers.video.MAX_SHELF_CLIPS", 1)
+
+        await dispatcher.feed_update(bot, make_update(owner_id, "/footage"))
+        await dispatcher.feed_update(bot, make_video_update(owner_id, update_id=5))
+        await dispatcher.feed_update(bot, make_video_update(owner_id, update_id=6))
+
+        from app.services.brand_assets import own_footage
+
+        assert len(own_footage(pro_business.id)) == 1
+        assert "Javon to'ldi" in session_calls.texts()[-1]
+
+    async def test_a_starter_plan_is_told_the_shelf_needs_pro(
+        self, owner_id: int, dispatcher, bot, session_calls, shelf_root, owned_business
+    ):
+        await dispatcher.feed_update(bot, make_update(owner_id, "/footage"))
+        assert "Pro" in session_calls.texts()[-1]
+
+
+class TestEveryDecisionIsAttributable:
+    """A rejection is a decision, and the system must be able to date it.
+
+    Approving recorded who and when from the start; two of the three reject
+    paths did not, so a month later the report could say five posts were
+    rejected but not by whom or when. The asymmetry was an oversight — these
+    pin it shut.
+    """
+
+    def _reject_paths(self) -> list[str]:
+        import pathlib
+
+        source = pathlib.Path("app/bot/handlers/review.py").read_text(encoding="utf-8")
+        blocks = []
+        for chunk in source.split("ContentItemStatus.REJECTED")[1:]:
+            blocks.append(chunk[:400])
+        return blocks
+
+    def test_every_reject_path_stamps_the_time(self):
+        for block in self._reject_paths():
+            assert "reviewed_at" in block, block[:120]
+
+    def test_every_reject_path_records_the_reviewer(self):
+        for block in self._reject_paths():
+            assert "reviewed_by" in block, block[:120]
+
+    def test_there_is_more_than_one_reject_path(self):
+        """Guards the test above: an empty list would pass vacuously."""
+        assert len(self._reject_paths()) >= 3

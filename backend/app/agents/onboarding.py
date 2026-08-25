@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.agents.base import BaseAgent
+from app.agents.facts import collect_facts
 from app.agents.prompts import ONBOARDING_SYSTEM
+from app.agents.researcher import ResearcherAgent, ResearchRequest, merge_into_knowledge
+from app.core.config import settings
 from app.core.exceptions import ValidationError
 from app.core.logging import get_logger
 from app.models.business import Business
@@ -84,6 +87,9 @@ class OnboardingResult:
     completeness: float
     updated_fields: list[str]
     summary: str
+    #: What the researcher appended to the notes, if it ran. Empty when the
+    #: agent is off, the input was too short, or the call failed.
+    research: dict[str, Any] = field(default_factory=dict)
 
 
 class OnboardingAgent(BaseAgent):
@@ -124,7 +130,9 @@ class OnboardingAgent(BaseAgent):
             prompt, KnowledgeExtraction, system=system, temperature=0.3, max_tokens=2500
         )
         updated = self.merge(knowledge, extraction, raw_message=text)
-        return self._complete(business, knowledge, extraction, updated, source=source)
+        result = self._complete(business, knowledge, extraction, updated, source=source)
+        result.research = await self.research(business, knowledge, text=text, source=source)
+        return result
 
     async def ingest_document(
         self,
@@ -169,7 +177,62 @@ class OnboardingAgent(BaseAgent):
         )
         note = f"[Hujjat: {filename}] {extraction.summary or ''}".strip()
         updated = self.merge(knowledge, extraction, raw_message=note)
-        return self._complete(business, knowledge, extraction, updated, source=source)
+        result = self._complete(business, knowledge, extraction, updated, source=source)
+        result.research = await self.research(
+            business, knowledge, document=(mime_type, data), source=source
+        )
+        return result
+
+    async def research(
+        self,
+        business: Business,
+        knowledge: KnowledgeBase,
+        *,
+        text: str = "",
+        document: tuple[str, bytes] | None = None,
+        source: str = "",
+    ) -> dict[str, Any]:
+        """Mine the same input for checkable facts and append them to the notes.
+
+        Onboarding owns the structured fields and fills them from what it
+        recognises. Everything it does not recognise — a fee buried in a
+        paragraph, a graduation figure, a schedule — is dropped on the floor,
+        and that is exactly the material the copy needs to stay checkable.
+
+        Deliberately additive and never fatal: a failure here leaves the
+        knowledge base exactly as onboarding left it.
+        """
+        if not settings.use_researcher_agent:
+            return {}
+        # A document is always worth a pass; free-form text has to earn one.
+        if document is None and len(text.strip()) < settings.research_min_chars:
+            return {}
+
+        known = [fact.text for fact in collect_facts(knowledge, limit=40)]
+        try:
+            findings = await ResearcherAgent(session=self.session, usage=self.usage).run(
+                ResearchRequest(
+                    business=business,
+                    knowledge=knowledge,
+                    raw_text=text,
+                    document=document,
+                    known_facts=known,
+                )
+            )
+        except Exception as exc:  # never fail an ingest over this
+            log.warning("research_failed", business=str(business.id), error=str(exc)[:200])
+            return {}
+
+        result = merge_into_knowledge(knowledge, findings)
+        if result["added"] or result["questions"]:
+            log.info(
+                "research_merged",
+                business=str(business.id),
+                source=source,
+                added=result["added"],
+                gaps=len(result["gaps"]),
+            )
+        return result
 
     def _complete(
         self,

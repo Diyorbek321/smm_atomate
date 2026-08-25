@@ -6,17 +6,26 @@ import re
 from dataclasses import dataclass, field
 
 from app.agents.base import BaseAgent, knowledge_context
+from app.agents.facts import collect_facts, mentions_a_fact
 from app.agents.prompts import EDITOR_SYSTEM
 from app.core.logging import get_logger
 from app.models.business import Business
 from app.models.enums import ContentType
 from app.models.knowledge_base import KnowledgeBase
 from app.schemas.content import CopyOutput, EditorIssue, EditorOutput
+from app.services.brand_kit import find_banned_words, kit_for
+from app.utils.similarity import (
+    DUPLICATE_THRESHOLD,
+    NEAR_IDENTICAL_THRESHOLD,
+    most_similar,
+)
 from app.utils.text import (
     IG_CAPTION_LIMIT,
     IG_HASHTAG_LIMIT,
     TG_MESSAGE_LIMIT,
     dedupe_phone,
+    find_concrete_details,
+    find_empty_phrases,
     find_placeholders,
     find_robotic_phrases,
     normalize_apostrophes,
@@ -30,6 +39,20 @@ log = get_logger(__name__)
 PASS_SCORE = 7.0
 MIN_CAPTION_WORDS = 12
 
+#: More filler than this and the caption is describing every competitor too.
+MAX_EMPTY_PHRASES = 2
+
+#: Content types a buyer reads to decide. A fact-free post here is not a weak
+#: post, it is a post about nothing — so it blocks rather than scores low.
+SELLING_TYPES = frozenset(
+    {
+        ContentType.FEED_POST,
+        ContentType.CAROUSEL,
+        ContentType.STORY,
+        ContentType.VIDEO_POST,
+    }
+)
+
 
 @dataclass(slots=True)
 class EditorRequest:
@@ -39,6 +62,9 @@ class EditorRequest:
     content_type: ContentType
     topic: str
     deep_check: bool = True   # set False to run only the local rules (fast/offline)
+    #: Headlines this business published in the last month. Empty is fine — a
+    #: first post cannot repeat itself.
+    recent_headlines: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -163,7 +189,86 @@ class EditorAgent(BaseAgent):
         if request.content_type == ContentType.REELS_SCRIPT and not (copy.script or {}).get("scenes"):
             add("major", "script", "Reels ssenariysida sahnalar yo'q", "Sahnalar ro'yxatini qo'shing")
 
+        # ---- fakt / bo'sh ibora / takror ------------------------------- #
+        # These three are what separates copy worth paying for from copy that
+        # is merely grammatical. They read the whole item, not just the
+        # Telegram caption: a carousel puts its numbers in the slides.
+        readable = self.readable_copy(copy)
+
+        # Two levels, not one. Demanding a knowledge-base fact in every post
+        # turns the feed into a price list; accepting anything turns it into
+        # adjectives. So: a checkable detail is required, a knowledge-base
+        # fact is preferred.
+        facts = collect_facts(kb, request.topic)
+        quotes_fact = bool(facts) and mentions_a_fact(readable, facts)
+        concrete = find_concrete_details(readable)
+
+        if not quotes_fact and not concrete:
+            add(
+                "critical" if request.content_type in SELLING_TYPES else "major",
+                "caption_tg",
+                "Tekshirsa bo'ladigan hech narsa yo'q — na raqam, na sana, na nom",
+                f"Aynan shuni yoz: {facts[0].text}" if facts else "Aniq raqam, sana yoki ism qo'sh",
+            )
+        elif facts and not quotes_fact:
+            add(
+                "minor",
+                "caption_tg",
+                "Bilim bazasidagi fakt ishlatilmagan",
+                f"Kuchliroq bo'lardi: {facts[0].text}",
+            )
+
+        # The house list forbids filler for everyone; this is the word THIS
+        # owner refuses to see. Critical, like a banned topic — it is not a
+        # style opinion, it is an instruction we were given.
+        for word in find_banned_words(readable, kit_for(kb.brand_kit if kb else None).voice.banned_words):
+            add("critical", "caption_tg", f"Brend taqiqlagan ibora: «{word}»",
+                "Boshqa so'z bilan ayting")
+
+        empty = find_empty_phrases(readable)
+        for phrase in empty[:MAX_EMPTY_PHRASES]:
+            add("minor", "caption_tg", f"Bo'sh ibora: «{phrase}»", "Aniq fakt bilan almashtiring")
+        if len(empty) > MAX_EMPTY_PHRASES:
+            add(
+                "major",
+                "caption_tg",
+                f"{len(empty)} ta umumiy ibora — matn istalgan raqobatchiga ham to'g'ri keladi",
+                "Kamida yarmini aniq raqam, sana yoki ism bilan almashtiring",
+            )
+
+        if request.recent_headlines:
+            twin, score = most_similar(
+                " ".join(filter(None, [copy.headline, request.topic])), request.recent_headlines
+            )
+            if score >= DUPLICATE_THRESHOLD:
+                # Two tiers for the same reason the fact check has two: a
+                # near-identical post should be rewritten, a merely similar one
+                # only needs the reviewer to see it and decide.
+                add(
+                    "critical" if score >= NEAR_IDENTICAL_THRESHOLD else "major",
+                    "headline",
+                    f"So'nggi oyda shunga juda o'xshash post bor ({score:.0%}): «{twin[:60]}»",
+                    "Boshqa burchak yoki boshqa faktdan boshlang",
+                )
+
         return issues
+
+    @staticmethod
+    def readable_copy(copy: CopyOutput) -> str:
+        """Every word a follower actually sees, in one string.
+
+        Checking `caption_tg` alone lets a carousel pass with its facts in the
+        slides and its filler in the caption, or the other way round.
+        """
+        parts = [copy.headline, copy.hook, copy.caption_tg, copy.caption_ig, copy.cta]
+        for slide in copy.slides or []:
+            parts.append(str(slide.get("title", "")))
+            parts.append(str(slide.get("body", "")))
+        quiz = copy.quiz or {}
+        parts.append(str(quiz.get("question", "")))
+        parts.extend(str(a) for a in (quiz.get("answers") or []))
+        parts.append(str(quiz.get("explanation", "")))
+        return "\n".join(p for p in parts if p)
 
     @staticmethod
     def _penalty(issues: list[EditorIssue]) -> float:

@@ -28,3 +28,20 @@ class LeadStates(StatesGroup):
 
     waiting_interest = State()
     waiting_phone = State()
+
+
+class ClipStates(StatesGroup):
+    """Asking what a promo clip should be about."""
+
+    waiting_topic = State()
+
+
+class FootageStates(StatesGroup):
+    """Collecting real clips for the footage shelf.
+
+    A separate state because the same video message means two different things:
+    outside it the owner wants *this* clip edited into a post, inside it they
+    are stocking the library future clips are built from.
+    """
+
+    waiting_clips = State()

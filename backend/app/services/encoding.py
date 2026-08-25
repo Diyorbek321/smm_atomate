@@ -33,6 +33,38 @@ COLOUR_TAGS: tuple[str, ...] = (
 INTERMEDIATE_CRF = 16
 INTERMEDIATE_PRESET = "veryfast"
 
+#: Social feeds normalise what they receive to about -14 LUFS. Delivering
+#: quieter than that is not "safer" — it just arrives quieter than everything
+#: around it in the feed. Every audio path out of this system ends here.
+LOUDNESS_TARGET = -14.0
+TRUE_PEAK = -1.5
+LOUDNESS_RANGE = 11
+
+
+def loudnorm_filter(
+    *, target: float = LOUDNESS_TARGET, measured: dict[str, str] | None = None
+) -> str:
+    """The loudnorm string for synthesised audio.
+
+    Single-pass was assumed to be close enough for a bed we generate ourselves.
+    Measured, it was not: a promo came out at -15.0 LUFS with -4.2 dBTP of
+    headroom left, because loudnorm's dynamic mode spends the pass guessing.
+    Given a first-pass measurement it switches to linear mode — one known gain,
+    landing on the target — for the price of one extra ffmpeg run over a
+    twenty-second WAV.
+    """
+    norm = f"loudnorm=I={target}:TP={TRUE_PEAK}:LRA={LOUDNESS_RANGE}"
+    if measured:
+        norm += (
+            f":measured_I={measured['input_i']}"
+            f":measured_TP={measured['input_tp']}"
+            f":measured_LRA={measured['input_lra']}"
+            f":measured_thresh={measured['input_thresh']}"
+            f":offset={measured['target_offset']}"
+            ":linear=true"
+        )
+    return norm
+
 
 def video_args(
     *,

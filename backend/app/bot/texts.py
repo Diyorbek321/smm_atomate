@@ -32,6 +32,10 @@ HELP = (
     "/plan — haftalik reja yaratish\n"
     "/review — tasdiqlanmagan postlar\n"
     "/quick — bitta tezkor post\n"
+    "/klip — promo klip (Pro tarif)\n"
+    "/footage — video kadr javonini to'ldirish\n"
+    "/brif — shu oyning suratga olish brifi\n"
+    "/hisobot — o'tgan oy natijasi\n"
     "/kb — bilim bazasi holati\n"
     "/status — statistika\n"
     "/cancel — joriy amalni bekor qilish\n\n"
@@ -79,6 +83,29 @@ VIDEO_DOWNLOAD_FAILED = "❌ Videoni yuklab bo'lmadi. Qaytadan yuborib ko'ring."
 VIDEO_PLAN_REQUIRED = (
     "🔒 Video tahrirlash <b>Standard</b> va <b>Pro</b> tariflarida mavjud.\n\n"
     "Hozirgi tarifingizda bu xizmat yo'q — tarifni ko'tarish uchun bog'laning."
+)
+
+# --- footage shelf -------------------------------------------------------
+FOOTAGE_PROMPT = (
+    "🎥 <b>Video kadr javoni</b>\n\n"
+    "Markazingizning haqiqiy kadrlarini yuboring — dars jarayoni, o'qituvchi gapirayotgan payt, "
+    "bino, o'quvchilar ishlayotgani. Telefonda olingan 10–30 soniyalik klip yetarli.\n\n"
+    "Bu kadrlar keyingi kliplarda ishlatiladi: o'qituvchi ko'rinadigan shablon "
+    "faqat shu javon to'lganda tanlanadi.\n\n"
+    "Ketma-ket bir nechta yuborishingiz mumkin. Tugatgach — /cancel.\n"
+    "Hozir javonda: <b>{count}</b> ta kadr."
+)
+FOOTAGE_SAVED = "✅ Kadr javonga qo'shildi. Jami: <b>{count}</b> ta.\n\nYana yuboring yoki /cancel."
+FOOTAGE_FULL = (
+    "📦 Javon to'ldi ({limit} ta kadr) — bundan ortig'i klip sifatiga qo'shimcha bermaydi.\n\n"
+    "Eskisini almashtirmoqchi bo'lsangiz, adminga murojaat qiling. /cancel"
+)
+FOOTAGE_WRONG_TYPE = (
+    "🎥 Bu yerda faqat video kutilyapti — kadr yuboring yoki /cancel bosing."
+)
+FOOTAGE_PLAN_REQUIRED = (
+    "🔒 Video kadr javoni klip render qilinadigan <b>Pro</b> tarifida ishlaydi.\n\n"
+    "Hozirgi tarifingizda kliplar chizilmaydi, shuning uchun kadrlar ham kerak emas."
 )
 
 LEAD_WELCOME = (
@@ -177,7 +204,25 @@ STATUS_TEXT = (
     "├ Chop etilgan (jami): <b>{published}</b>\n"
     "├ Xatolik: <b>{failed}</b>\n"
     "└ O'rtacha sifat: <b>{quality}/10</b>\n\n"
-    "🧠 Bilim bazasi: {kb_progress}"
+    "🧠 Bilim bazasi: {kb_progress}\n\n"
+    "{media}"
+)
+
+MEDIA_READY = (
+    "🎨 <b>Vizual material</b>\n"
+    "├ 3D proplar: <b>{props}</b>\n"
+    "├ Fotolar: <b>{photos}</b>\n"
+    "└ Video kadrlar: <b>{footage}</b>"
+)
+
+MEDIA_PROVIDER_OFF = (
+    "\n\n⚠️ Rasm generatsiyasi o'chiq (<code>IMAGE_PROVIDER={provider}</code>) — "
+    "proplar to'planmaydi va kliplar 3D obyektsiz chiqadi."
+)
+
+MEDIA_NO_FOOTAGE = (
+    "\n\nℹ️ Video kadr yo'q — o'qituvchi ko'rinadigan klip o'rniga "
+    "matnli shablon tanlanadi."
 )
 
 KB_SUMMARY = (
@@ -250,3 +295,11 @@ def type_label(content_type: ContentType) -> str:
 
 def status_label(status: ContentItemStatus) -> str:
     return STATUS_LABELS.get(status, str(status))
+
+
+CLIP_PROMPT = "🎬 Klip nima haqida bo'lsin? Mavzuni qisqacha yozing."
+CLIP_GENERATING = (
+    "⏳ Klip tayyorlanmoqda — bu bir necha daqiqa oladi.\n"
+    "Tayyor bo'lgach shu yerga video bo'lib tushadi."
+)
+CLIP_NO_QUEUE = "⚠️ Hozir navbat ishlamayapti. Birozdan keyin urinib ko'ring."

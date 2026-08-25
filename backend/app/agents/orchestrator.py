@@ -6,12 +6,17 @@ import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.analyst import AnalysisRequest, AnalystAgent, production_stats
 from app.agents.base import AgentUsage
 from app.agents.copywriter import CopyRequest, CopywriterAgent
+from app.agents.designer import DesignerAgent, DesignRequest
 from app.agents.editor import EditorAgent, EditorRequest, EditorResult
+from app.agents.hook import HookAgent, HookRequest
+from app.agents.marketolog import MarketingRequest, MarketologAgent
 from app.agents.strategist import StrategistAgent, StrategyRequest
 from app.agents.visual import VisualAgent, VisualRequest
 from app.core.config import settings
@@ -47,6 +52,27 @@ SlotOutcome = tuple[
 ]
 
 
+def _replace_opening(caption: str, old_hook: str, new_hook: str) -> str:
+    """Swap the caption's first line, but only when it is the hook.
+
+    The copywriter usually opens the caption with the same sentence it returns
+    in ``hook`` — usually, not always. When the first line is something else,
+    the caption is left exactly as the editor approved it and only the ``hook``
+    field changes; a hook stitched onto an unrelated opening reads worse than
+    the one it replaced.
+    """
+    if not caption.strip() or not old_hook.strip() or not new_hook.strip():
+        return caption
+
+    def flatten(value: str) -> str:
+        return "".join(ch for ch in value.lower() if ch.isalnum())
+
+    head, separator, tail = caption.partition("\n")
+    if flatten(head) != flatten(old_hook):
+        return caption
+    return f"{new_hook}{separator}{tail}"
+
+
 @dataclass(slots=True)
 class PipelineResult:
     plan: ContentPlan | None = None
@@ -69,6 +95,9 @@ class ContentPipeline:
         self.knowledge_repo = KnowledgeBaseRepository(session)
         self.plans = ContentPlanRepository(session)
         self.items = ContentItemRepository(session)
+        #: Filled once per orchestrator, not once per slot — eight posts in a
+        #: week would otherwise mean eight identical queries.
+        self._recent_headlines: dict[uuid.UUID, list[str]] = {}
 
     # ------------------------------------------------------------------ #
     # Full plan generation
@@ -95,7 +124,16 @@ class ContentPipeline:
         plan = await self._prepare_plan(business, start, horizon_days, total)
         result = PipelineResult(plan=plan)
 
-        strategy = await self._strategy(business, knowledge, start, horizon_days, total, extra_instructions)
+        # Fetched once and shared: the marketolog and the strategist plan from
+        # the same two months, and this is the same query either way.
+        performance = await ContentItemRepository(self.session).recent_performance(business.id)
+        instructions = await self._marketing_brief(
+            business, knowledge, horizon_days, total, performance, extra_instructions
+        )
+
+        strategy = await self._strategy(
+            business, knowledge, start, horizon_days, total, instructions, performance
+        )
         plan.title = strategy.theme or plan.title
         plan.strategy = strategy.model_dump(mode="json")
         plan.notes = strategy.notes
@@ -158,6 +196,87 @@ class ContentPipeline:
         await self.session.flush()
         return plan
 
+    async def _marketing_brief(
+        self,
+        business: Business,
+        knowledge: KnowledgeBase,
+        horizon_days: int,
+        total: int,
+        performance: dict[str, Any],
+        extra_instructions: str,
+    ) -> str:
+        """Prepend the week's commercial angle to whatever the owner asked for.
+
+        The strategist reads ``extra_instructions`` already, so the brief needs
+        no change on its side. When the agent is off or returns nothing usable,
+        the instructions pass through untouched and planning behaves exactly as
+        it did before this existed.
+        """
+        if not settings.use_marketolog_agent:
+            return extra_instructions
+
+        # The analyst reads last month and writes recommendations; the
+        # marketolog is the only thing that acts on them, so it runs here
+        # rather than on its own schedule.
+        briefed = "\n\n".join(
+            filter(None, [await self._analysis(business, performance), extra_instructions])
+        )
+
+        agent = MarketologAgent(session=self.session, usage=self.usage)
+        brief = await agent.run(
+            MarketingRequest(
+                business=business,
+                knowledge=knowledge,
+                horizon_days=horizon_days,
+                posts_count=total,
+                performance=performance,
+                extra_instructions=briefed,
+            )
+        )
+        if not brief.is_usable:
+            return extra_instructions
+
+        log.info("marketing_brief", business=str(business.id), segment=brief.segment[:60])
+        return "\n\n".join(filter(None, [brief.as_instructions(), extra_instructions]))
+
+    async def _analysis(self, business: Business, performance: dict[str, Any]) -> str:
+        """Last month as the analyst read it, rendered for the marketolog.
+
+        Failure here is not worth failing a plan over: an empty string puts the
+        marketolog back to briefing from the performance numbers alone, which
+        is what it did before this agent existed.
+        """
+        if not settings.use_analyst_agent:
+            return ""
+
+        items = list(
+            await ContentItemRepository(self.session).produced_between(
+                business.id, days=settings.analyst_window_days
+            )
+        )
+        production = production_stats(items)
+        if not production.get("total"):
+            return ""
+
+        agent = AnalystAgent(session=self.session, usage=self.usage)
+        report = await agent.run(
+            AnalysisRequest(
+                business=business,
+                performance=performance,
+                production=production,
+                days=settings.analyst_window_days,
+            )
+        )
+        instructions = report.as_instructions()
+        if instructions:
+            log.info(
+                "analysis_briefed",
+                business=str(business.id),
+                confidence=report.confidence,
+                recommendations=len(report.recommendations),
+            )
+        return instructions
+
     async def _strategy(
         self,
         business: Business,
@@ -166,6 +285,7 @@ class ContentPipeline:
         horizon_days: int,
         total: int,
         extra_instructions: str,
+        performance: dict[str, Any],
     ) -> StrategyOutput:
         agent = StrategistAgent(session=self.session, usage=self.usage)
         return await agent.run(
@@ -176,6 +296,10 @@ class ContentPipeline:
                 horizon_days=horizon_days,
                 posts_count=total,
                 extra_instructions=extra_instructions,
+                # Planning without this is planning blind: the strategist could
+                # not previously see which pillar earned a response, or what it
+                # had already covered last month.
+                performance=performance,
             )
         )
 
@@ -216,6 +340,18 @@ class ContentPipeline:
         await self.session.flush()
         return items, failures
 
+    async def _recent_history(self, business: Business) -> list[str]:
+        """Last month's headlines for this business, fetched at most once."""
+        cached = self._recent_headlines.get(business.id)
+        if cached is None:
+            try:
+                cached = await self.items.recent_headlines(business.id)
+            except Exception as exc:                     # history is a nicety
+                log.warning("recent_headlines_failed", error=str(exc)[:200])
+                cached = []
+            self._recent_headlines[business.id] = cached
+        return cached
+
     # ------------------------------------------------------------------ #
     # Single item generation
     # ------------------------------------------------------------------ #
@@ -245,6 +381,7 @@ class ContentPipeline:
         )
         copy = await copywriter.run(copy_request)
 
+        history = await self._recent_history(business)
         review = await editor.run(
             EditorRequest(
                 business=business,
@@ -252,6 +389,7 @@ class ContentPipeline:
                 copy=copy,
                 content_type=slot.content_type,
                 topic=slot.topic,
+                recent_headlines=history,
             )
         )
 
@@ -277,10 +415,31 @@ class ContentPipeline:
                     copy=copy,
                     content_type=slot.content_type,
                     topic=slot.topic,
+                    recent_headlines=history,
                 )
             )
 
         copy = review.copy
+        if settings.use_hook_agent:
+            copy = await self._sharpen_hook(business, knowledge, slot, copy, editor, history)
+
+        design = None
+        if settings.use_designer_agent:
+            designer = DesignerAgent(session=self.session, usage=self.usage)
+            design = await designer.run(
+                DesignRequest(
+                    business=business,
+                    knowledge=knowledge,
+                    content_type=slot.content_type,
+                    pillar=slot.pillar,
+                    topic=slot.topic,
+                    headline=copy.headline,
+                    hook=copy.hook,
+                    caption=copy.caption_tg,
+                    cta=copy.cta,
+                )
+            )
+
         visual_agent = VisualAgent(session=self.session, usage=self.usage)
         visual = await visual_agent.run(
             VisualRequest(
@@ -294,9 +453,76 @@ class ContentPipeline:
                 cta=copy.cta,
                 slides=copy.slides,
                 generate_photo=render_image,
+                design=design,
             )
         )
         return copy, review, visual
+
+    async def _sharpen_hook(
+        self,
+        business: Business,
+        knowledge: KnowledgeBase,
+        slot: PlanSlot,
+        copy: CopyOutput,
+        editor: EditorAgent,
+        history: list[str],
+    ) -> CopyOutput:
+        """Rewrite the opening line of a caption the editor has already passed.
+
+        Running after approval keeps the rewrite loop cheap, but it means the
+        new line has never been checked. So the candidate goes back through the
+        editor's *local* rules — no LLM call — and is dropped if it introduces a
+        critical problem the approved copy did not have. A hook is never worth
+        shipping a banned word for.
+        """
+        agent = HookAgent(session=self.session, usage=self.usage)
+        result = await agent.run(
+            HookRequest(
+                business=business,
+                knowledge=knowledge,
+                content_type=slot.content_type,
+                pillar=slot.pillar,
+                topic=slot.topic,
+                caption=copy.caption_tg,
+                current_hook=copy.hook,
+            )
+        )
+        if not result.changed:
+            return copy
+
+        candidate = copy.model_copy(
+            update={
+                "hook": result.hook,
+                "caption_tg": _replace_opening(copy.caption_tg, copy.hook, result.hook),
+                "caption_ig": _replace_opening(copy.caption_ig, copy.hook, result.hook),
+            }
+        )
+
+        def critical_problems(subject: CopyOutput) -> set[str]:
+            issues = editor.static_checks(
+                EditorRequest(
+                    business=business,
+                    knowledge=knowledge,
+                    copy=subject,
+                    content_type=slot.content_type,
+                    topic=slot.topic,
+                    deep_check=False,
+                    recent_headlines=history,
+                )
+            )
+            return {issue.problem for issue in issues if issue.severity == "critical"}
+
+        # Only *new* problems disqualify the hook. The approved copy may already
+        # trip a rule the editor's LLM pass forgave; holding the hook to a higher
+        # bar than the post it belongs to would reject every rewrite.
+        before = critical_problems(copy)
+        after = critical_problems(candidate)
+        if after - before:
+            log.info("hook_rejected_by_rules", topic=slot.topic[:60], issues=sorted(after - before)[:2])
+            return copy
+
+        log.info("hook_sharpened", topic=slot.topic[:60], hook=result.hook[:60])
+        return candidate
 
     def _build_item(
         self,

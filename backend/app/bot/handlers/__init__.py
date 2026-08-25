@@ -2,7 +2,16 @@
 
 from aiogram import Router
 
-from app.bot.handlers import admin, lead, onboarding, review, start, video, voice
+from app.bot.handlers import (
+    admin,
+    lead,
+    onboarding,
+    reactions,
+    review,
+    start,
+    video,
+    voice,
+)
 
 #: Order matters: specific flows first, the catch-all last.
 HANDLER_ROUTERS = (
@@ -13,6 +22,7 @@ HANDLER_ROUTERS = (
     video.router,
     lead.router,
     voice.router,
+    reactions.router,
 )
 
 

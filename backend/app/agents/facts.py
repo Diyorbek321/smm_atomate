@@ -137,11 +137,22 @@ def render_inline_block(facts: list[Fact], limit: int = 3) -> str:
     resort is to state the facts in code rather than ship a fact-free post.
     Only priced items are used — a bare course name adds nothing here.
     """
-    chosen = [fact for fact in facts if fact.is_priced][:limit]
-    if not chosen:
+    priced = [fact for fact in facts if fact.is_priced][:limit]
+    if priced:
+        lines = "\n".join(f"— {fact.label}: {fact.value}" for fact in priced)
+        return f"📌 Narxlar:\n{lines}"
+
+    # No price in the knowledge base is not a reason to ship an empty post.
+    # A named offering with its description is still something a competitor
+    # cannot copy, which is the whole point of the requirement.
+    named = [fact for fact in facts if fact.label.strip()][:limit]
+    if not named:
         return ""
-    lines = "\n".join(f"— {fact.label}: {fact.value}" for fact in chosen)
-    return f"📌 Narxlar:\n{lines}"
+    lines = "\n".join(
+        f"— {fact.label}" + (f": {fact.value}" if fact.value.strip() else "")
+        for fact in named
+    )
+    return f"📌 Yo'nalishlar:\n{lines}"
 
 
 def retry_instruction(facts: list[Fact]) -> str:

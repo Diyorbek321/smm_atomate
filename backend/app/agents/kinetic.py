@@ -17,7 +17,7 @@ from app.agents.base import BaseAgent, knowledge_context
 from app.core.logging import get_logger
 from app.models.business import Business
 from app.models.knowledge_base import KnowledgeBase
-from app.services.brand_assets import photo_library
+from app.services.brand_assets import photo_library, prop_library
 from app.services.kinetic import (
     KineticResult,
     KineticSpec,
@@ -199,6 +199,7 @@ class KineticAgent(BaseAgent):
             footer=(knowledge.address if knowledge else "") or "",
             logo=self._logo_bytes(knowledge),
             prop_photos=photo_library(business.id, topic),
+            prop_renders=prop_library(business.id, topic),
             music=self._music(),
         )
         total = sum(scene.duration for scene in scenes)

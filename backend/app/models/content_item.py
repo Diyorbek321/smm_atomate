@@ -130,6 +130,11 @@ class ContentItem(UUIDMixin, TimestampMixin, Base):
     quality_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     editor_report: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     ai_meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    #: What the post did once it was live — reactions so far, when they were
+    #: last counted. Empty until the first reaction lands; a post with no
+    #: reactions and a post never measured are different things, and the
+    #: strategist has to be able to tell them apart.
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     content_plan: Mapped[ContentPlan | None] = relationship(back_populates="items")
     business: Mapped[Business] = relationship(back_populates="content_items")

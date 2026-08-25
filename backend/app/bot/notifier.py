@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 
+from aiogram.types import FSInputFile, InputMediaPhoto
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.main import bot_session
@@ -80,4 +81,67 @@ async def notify_admins(session: AsyncSession, business_id: uuid.UUID, text: str
                     log.warning("notify_failed", user=reviewer.telegram_user_id, error=str(exc)[:160])
     except ConfigurationError as exc:
         log.warning("notify_skipped", reason=str(exc))
+    return sent
+
+
+async def push_clip(
+    session: AsyncSession,
+    business_id: uuid.UUID,
+    path: str,
+    caption: str = "",
+) -> int:
+    """Send a finished clip straight to the owners.
+
+    A rendered clip is not a :class:`ContentItem` — it has no schedule, no
+    caption to approve, nothing to edit. It is a file someone asked for, so it
+    goes to them as a file rather than through the review flow.
+    """
+    reviewers = await reviewers_for(session, business_id)
+    sent = 0
+    try:
+        async with bot_session() as bot:
+            for reviewer in reviewers:
+                try:
+                    await bot.send_video(
+                        reviewer.telegram_user_id,
+                        FSInputFile(path),
+                        caption=caption or None,
+                        supports_streaming=True,
+                    )
+                    sent += 1
+                except Exception as exc:
+                    log.warning("clip_push_failed", user=reviewer.telegram_user_id,
+                                error=str(exc)[:160])
+    except ConfigurationError as exc:
+        log.warning("clip_push_skipped", reason=str(exc))
+    return sent
+
+
+async def push_slides(
+    session: AsyncSession,
+    business_id: uuid.UUID,
+    paths: Sequence[str],
+    caption: str = "",
+) -> int:
+    """Send carousel slides as one album — Telegram caps a group at ten."""
+    reviewers = await reviewers_for(session, business_id)
+    if not paths:
+        return 0
+    sent = 0
+    try:
+        async with bot_session() as bot:
+            for reviewer in reviewers:
+                try:
+                    album = [
+                        InputMediaPhoto(media=FSInputFile(path),
+                                        caption=caption if index == 0 and caption else None)
+                        for index, path in enumerate(paths[:10])
+                    ]
+                    await bot.send_media_group(reviewer.telegram_user_id, album)
+                    sent += 1
+                except Exception as exc:
+                    log.warning("slides_push_failed", user=reviewer.telegram_user_id,
+                                error=str(exc)[:160])
+    except ConfigurationError as exc:
+        log.warning("slides_push_skipped", reason=str(exc))
     return sent

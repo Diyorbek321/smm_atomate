@@ -16,7 +16,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 
 from app.bot.handlers import build_router
-from app.bot.middlewares import AdminContextMiddleware, DatabaseMiddleware, LoggingMiddleware
+from app.bot.middlewares import (
+    AdminContextMiddleware,
+    DatabaseMiddleware,
+    LoggingMiddleware,
+    MenuResetMiddleware,
+)
 from app.core.config import settings
 from app.core.exceptions import ConfigurationError
 from app.core.logging import configure_logging, get_logger
@@ -31,6 +36,8 @@ BOT_COMMANDS = [
     ("plan", "Haftalik reja yaratish"),
     ("review", "Tasdiqlanmagan postlar"),
     ("quick", "Tezkor post"),
+    ("klip", "Promo klip"),
+    ("footage", "Video kadr javoni"),
     ("kb", "Bilim bazasi"),
     ("status", "Statistika"),
     ("help", "Yordam"),
@@ -96,11 +103,14 @@ def build_dispatcher(storage: Any = None, session_factory: Any = None) -> Dispat
 
     dispatcher = Dispatcher(storage=storage)
 
-    # Order: logging → session → admin context (needs the session).
+    # Order: logging → session → admin context (needs the session) →
+    # menu reset (needs the FSM context aiogram injects before inner
+    # middlewares, so it must not be an outer one).
     for middleware in (
         LoggingMiddleware(),
         DatabaseMiddleware(session_factory),
         AdminContextMiddleware(),
+        MenuResetMiddleware(),
     ):
         dispatcher.message.middleware(middleware)
         dispatcher.callback_query.middleware(middleware)
