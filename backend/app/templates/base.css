@@ -44,6 +44,13 @@ body {
   font-family: {{ fonts.display }}, 'Noto Color Emoji';
   font-size: {{ layout.title_size }}px; font-weight: 800; line-height: 1.06;
   letter-spacing: -0.03em; text-wrap: balance;
+  /* A brand's display face often ships one weight — Anton is Regular-only.
+     Asked for 800 it does not have, the browser fakes bold by drawing each
+     glyph twice at an offset, and on a condensed face the copies overlap into
+     an unreadable smear. Refusing the fake keeps the real weight the
+     designer chose; a display face is already heavy by construction. */
+  font-synthesis: none;
+  -webkit-font-synthesis: none;
 }
 .title .hl { color: {{ colors.accent }}; }
 .body-text { font-size: {{ layout.body_size }}px; line-height: 1.42; opacity: .86; font-weight: 400; }

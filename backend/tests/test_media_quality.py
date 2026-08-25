@@ -962,3 +962,32 @@ class TestBrandPropGeneration:
             brand_props.ensure_props("biz", topic="", count=4, generator=generator)
         )
         assert len(result) == 3
+
+
+class TestSyntheticBold:
+    """A display face with one weight must not be faked into a bolder one.
+
+    Anton — the face Postchi's brand kit names — ships Regular only. Asked for
+    the 800 the stylesheet wants, Chromium draws every glyph twice at an offset
+    to fake it, and on a condensed face the two copies overlap into a smear.
+    The visual QC gate caught it (3/10, twice) but retrying could not fix it:
+    shortening the headline does not change how the glyphs are drawn.
+    """
+
+    def test_the_title_refuses_synthetic_weights(self):
+        from pathlib import Path
+
+        css = Path("app/templates/base.css").read_text(encoding="utf-8")
+        # Split on the next selector, not on `}` — the rule interpolates
+        # `{{ fonts.display }}`, whose closing braces would cut it short.
+        title_rule = css.split(".title {", 1)[1].split(".title .hl", 1)[0]
+
+        assert "font-synthesis: none" in title_rule
+        assert "-webkit-font-synthesis: none" in title_rule
+
+    def test_the_bundled_display_face_really_has_one_weight(self):
+        """If Anton ever ships a bold, the rule above stops being load-bearing."""
+        from fontTools.ttLib import TTFont
+
+        font = TTFont("app/assets/fonts/anton.ttf")
+        assert font["OS/2"].usWeightClass == 400
