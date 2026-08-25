@@ -297,15 +297,19 @@ class TestRenderRetries:
             hook="Qo'shimcha izoh matni",
         )
 
-    def test_the_retry_shortens_the_card_instead_of_rerolling(self):
-        from app.agents.visual import VisualAgent, VisualBrief
+    def test_the_repair_matches_the_complaint(self):
+        """The retry used to shorten the headline whatever was wrong with it."""
+        from app.services.visual_qc import VisualVerdict
+        from app.services.visual_repair import repair
 
-        attempts = list(
-            VisualAgent()._card_attempts(self._request(), VisualBrief(), "carousel", "")
-        )
-        assert len(attempts) == 2
-        assert len(attempts[1]["title"]) < len(attempts[0]["title"])
-        assert attempts[1]["body"] == ""
+        context = {"title": "x" * 80, "body": "izoh", "photo": "data:x",
+                   "layout": {"title_size": 88}}
+
+        clipped = repair(context, VisualVerdict(score=3, text_complete=False), set())
+        unreadable = repair(context, VisualVerdict(score=3, readable=False), set())
+
+        assert clipped["layout"]["title_size"] < 88, "smaller type, same words"
+        assert unreadable["photo"] == "", "a contrast problem is not a length problem"
 
     @staticmethod
     def _wire(monkeypatch, verdicts, tmp_path):
@@ -357,7 +361,8 @@ class TestRenderRetries:
             )
         )
         assert url
-        assert len(rendered) == 2 and rendered[1] < rendered[0]
+        assert len(rendered) == 2
+        assert rendered[1] == rendered[0], "the first clipping repair shrinks type, not copy"
         assert warnings == []                      # the second attempt was fine
 
     def test_when_both_attempts_fail_the_owner_is_told(self, monkeypatch, tmp_path):
@@ -675,7 +680,8 @@ class TestCarouselGate:
             VisualAgent()._render_carousel(self._request(1), VisualBrief(), warnings)
         )
         assert slides[0]["image_url"]
-        assert len(seen) == 2 and len(seen[1]) < len(seen[0])
+        assert len(seen) == 2
+        assert len(seen[1]) == len(seen[0]), "type shrinks before the copy does"
         assert warnings == []
 
     def test_the_warning_names_the_slide(self, monkeypatch, tmp_path):
@@ -685,19 +691,30 @@ class TestCarouselGate:
         self._wire(
             monkeypatch,
             tmp_path,
-            [VisualVerdict(score=3, issues=["Matn kesilgan"]), VisualVerdict(score=4)],
+            [
+                VisualVerdict(score=3, issues=["Matn kesilgan"]),
+                VisualVerdict(score=4, issues=["Matn kesilgan"]),
+                VisualVerdict(score=4, issues=["Matn kesilgan"]),
+            ],
         )
         warnings: list[str] = []
         asyncio.run(VisualAgent()._render_carousel(self._request(1), VisualBrief(), warnings))
         assert warnings and "slide1" in warnings[0]
 
-    def test_the_tightened_slide_keeps_fewer_bullets(self):
-        from app.agents.visual import _slide_attempts
+    def test_a_slide_stops_being_redrawn_once_the_levers_are_spent(self, monkeypatch, tmp_path):
+        """Three renders is the cap: the original plus two targeted repairs."""
+        from app.agents.visual import VisualAgent, VisualBrief
+        from app.services.visual_qc import VisualVerdict
 
-        context = {"title": "x" * 80, "body": "y" * 300, "bullets": ["a", "b", "c", "d"]}
-        first, second = list(_slide_attempts(context))
-        assert len(second["title"]) < len(first["title"])
-        assert len(second["bullets"]) == 3
+        seen, _ = self._wire(
+            monkeypatch, tmp_path,
+            [VisualVerdict(score=2, text_complete=False)] * 6,
+        )
+        warnings: list[str] = []
+        asyncio.run(VisualAgent()._render_carousel(self._request(1), VisualBrief(), warnings))
+
+        assert len(seen) <= 3
+        assert warnings, "the owner is told the slide never passed"
 
 
 def brightness(samples) -> float:

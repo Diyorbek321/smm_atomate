@@ -30,6 +30,7 @@ from app.services.renderer import (
 from app.services.storage import get_storage
 from app.services.style_dna import StyleDNA, apply_style, style_for
 from app.services.visual_qc import VisualVerdict, review_image
+from app.services.visual_repair import diagnose, repair
 from app.utils.text import truncate_caption
 
 log = get_logger(__name__)
@@ -100,21 +101,10 @@ RATIO_BY_TYPE = {
 
 MAX_CAROUSEL_SLIDES = 10
 
-
-def _slide_attempts(context: dict):
-    """A carousel slide as written, then a version that fits.
-
-    Every slide is checked, not just the cover: an inner slide with its last
-    line cut off is exactly as embarrassing, and the owner swipes past the
-    cover to find it.
-    """
-    yield context
-    yield {
-        **context,
-        "title": truncate_caption(context.get("title", ""), 46),
-        "body": truncate_caption(context.get("body", ""), 120),
-        "bullets": (context.get("bullets") or [])[:3],
-    }
+#: Renders per card. Three is one original plus two targeted repairs — past
+#: that the reviewer has objected to something no lever here can move, and a
+#: fourth render is a fourth model call spent proving it.
+MAX_RENDER_ATTEMPTS = 3
 
 
 def _topic_seed(topic: str) -> int:
@@ -480,43 +470,29 @@ class VisualAgent(BaseAgent):
         mime = "image/jpeg" if image.stored.path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
         return await review_image(data, mime_type=mime)
 
-    def _card_attempts(
-        self, request: VisualRequest, brief: VisualBrief, canvas: str, photo: str
-    ):
-        """The card as briefed, then a tighter version of it.
-
-        Almost every card the quality gate rejects is rejected for the same
-        reason — too many words for the space. Shortening the headline and
-        dropping the supporting line is the fix that actually works, so the
-        retry is that, not another roll of the dice.
-        """
-        context = self._card_context(request, brief, canvas, photo=photo)
-        yield context
-        yield {
-            **context,
-            "title": truncate_caption(context.get("title", ""), 46),
-            "body": "",
-        }
-
     async def _render_checked(
         self,
-        attempts,
+        context: dict,
         *,
         template: str,
         width: int,
         height: int,
         prefix: str,
         warnings: list[str] | None = None,
+        max_attempts: int = MAX_RENDER_ATTEMPTS,
     ) -> str | None:
-        """Render attempts in order, keep the first the gate passes.
+        """Render, check, repair what the reviewer objected to, render again.
 
-        If none pass, the best-scoring one still ships — a flawed card beats no
-        card — but the owner is told what was wrong with it.
+        The repair is chosen from the verdict rather than fixed in advance —
+        see :mod:`app.services.visual_repair`. When no lever is left the best
+        attempt still ships (a flawed card beats no card) and the owner is told
+        what was wrong with it.
         """
         renderer = get_renderer()
         best: tuple[bytes, VisualVerdict | None] | None = None
+        tried: set[str] = set()
 
-        for attempt, context in enumerate(attempts, start=1):
+        for attempt in range(1, max_attempts + 1):
             try:
                 data = await renderer.render_png(
                     RenderRequest(template=template, context=context, width=width, height=height)
@@ -531,10 +507,16 @@ class VisualAgent(BaseAgent):
                 break
             if best is None or verdict.score > (best[1].score if best[1] else 0):
                 best = (data, verdict)
+
+            repaired = repair(context, verdict, tried)
             log.info(
-                "render_qc_retry", prefix=prefix, attempt=attempt,
-                score=verdict.score, issues=verdict.issues[:2],
+                "render_qc_retry", prefix=prefix, attempt=attempt, score=verdict.score,
+                defect=diagnose(verdict), issues=verdict.issues[:2],
+                giving_up=repaired is None,
             )
+            if repaired is None:
+                break
+            context = repaired
 
         if best is None:                          # pragma: no cover - loop always runs
             return None
@@ -544,7 +526,6 @@ class VisualAgent(BaseAgent):
                 f"visual_qc {prefix} {verdict.score}/10: {'; '.join(verdict.issues[:2])}"
             )
         return get_storage().save_bytes(data, prefix=prefix, content_type="image/png").url
-
     async def _render_card(
         self,
         request: VisualRequest,
@@ -557,7 +538,7 @@ class VisualAgent(BaseAgent):
     ) -> str | None:
         width, height = CANVAS[canvas]
         return await self._render_checked(
-            self._card_attempts(request, brief, canvas, photo),
+            self._card_context(request, brief, canvas, photo=photo),
             template=template,
             width=width,
             height=height,
@@ -600,7 +581,7 @@ class VisualAgent(BaseAgent):
                 "contact": (kb.contact_line.replace("\n", "   ") if kb and kb.contact_line else ""),
             }
             url = await self._render_checked(
-                _slide_attempts(context),
+                context,
                 template="carousel_slide.html",
                 width=width,
                 height=height,
