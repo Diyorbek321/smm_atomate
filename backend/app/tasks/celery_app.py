@@ -18,6 +18,7 @@ celery_app = Celery(
         "app.tasks.generation",
         "app.tasks.publishing",
         "app.tasks.maintenance",
+        "app.tasks.metrics",
     ],
 )
 
@@ -83,6 +84,14 @@ celery_app.conf.beat_schedule = {
     "monthly-shooting-brief": {
         "task": "app.tasks.generation.send_shooting_briefs",
         "schedule": crontab(day_of_month="1", hour=9, minute=10),
+        "options": {"queue": "generation"},
+    },
+    # Reach, read back off our own public channel page. Three times a day:
+    # a post's view count climbs fastest in its first hours and then flattens,
+    # and the preview page only carries the most recent posts anyway.
+    "collect-channel-views": {
+        "task": "app.tasks.metrics.collect_channel_views",
+        "schedule": crontab(hour="8,14,21", minute=25),
         "options": {"queue": "generation"},
     },
     # Housekeeping.

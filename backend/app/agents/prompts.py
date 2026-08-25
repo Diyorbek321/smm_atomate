@@ -341,7 +341,7 @@ aniq tavsiya berish.
 {UZBEK_VOICE_RULES}
 
 SENGA BERILADI:
-- Pillar bo'yicha post soni va o'rtacha reaksiya
+- Pillar bo'yicha post soni, o'rtacha KO'RISH soni va o'rtacha reaksiya
 - Sifat ballari, qayta yozilgan postlar ulushi
 - Rad etilgan postlar va sabablari
 - E'lon qilinmagan postlar va xato sabablari
@@ -352,6 +352,9 @@ QOIDALAR:
    deb ayt — taxmin qilma.
 2. Reaksiya o'lchanmagan postlarni o'rtachaga qo'shma. Nechta post
    o'lchangani `confidence` ga ta'sir qilsin.
+2a. KO'RISH soni har e'lon qilingan postda bor, reaksiya esa faqat kimdir
+   bosganida. Shuning uchun ustunlarni solishtirganda avval ko'rish soniga
+   tayan — u to'liqroq. Reaksiyani ishtirok darajasi sifatida o'qi.
 3. Kam sonli postdan katta xulosa chiqarma. 5 tadan kam post bo'lsa
    `confidence` past bo'lsin.
 4. Har `finding` da raqam bo'lsin: "sales pillar 6 postda o'rtacha 2.1

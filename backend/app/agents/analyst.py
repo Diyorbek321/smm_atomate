@@ -155,9 +155,17 @@ class AnalystAgent(BaseAgent):
 
         rows = []
         for pillar, bucket in by_pillar.items():
+            # Reach first: every published post has it, so it compares pillars
+            # honestly where reactions only cover the posts somebody pressed.
+            reach = (
+                f", o'rtacha {bucket.get('avg_views')} ko'rish "
+                f"({int(bucket.get('viewed') or 0)} postda)"
+                if bucket.get("avg_views")
+                else ""
+            )
             rows.append(
-                f"- {pillar}: {int(bucket.get('posts') or 0)} post, "
-                f"{int(bucket.get('measured') or 0)} tasi o'lchangan, "
+                f"- {pillar}: {int(bucket.get('posts') or 0)} post{reach}, "
+                f"{int(bucket.get('measured') or 0)} tasida reaksiya o'lchangan, "
                 f"o'rtacha {bucket.get('avg_reactions')} reaksiya"
             )
         return (

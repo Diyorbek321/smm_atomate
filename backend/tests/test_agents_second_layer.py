@@ -8,7 +8,7 @@ what this covers.
 
 from __future__ import annotations
 
-from app.agents.analyst import AnalysisRequest, AnalysisReport, AnalystAgent, production_stats
+from app.agents.analyst import AnalysisReport, AnalysisRequest, AnalystAgent, production_stats
 from app.agents.designer import DesignBrief, DesignerAgent, DesignRequest
 from app.agents.hook import HookAgent, HookOptions
 from app.agents.marketolog import MarketingBrief
@@ -22,7 +22,6 @@ from app.agents.researcher import (
 from app.agents.video_editor import EditPlan, KeepSegment, VideoEditorAgent
 from app.models.content_item import ContentItem
 from app.models.enums import ContentItemStatus, ContentPillar, ContentType
-
 from tests.test_agents import make_business, make_knowledge
 
 
@@ -377,7 +376,31 @@ class TestPerformanceBlock:
                 "recent_topics": ["IELTS", "Speaking"],
             }
         )
-        assert "5 post" in block and "4 tasi o'lchangan" in block and "2.5" in block
+        assert "5 post" in block and "4 tasida reaksiya" in block and "2.5" in block
+
+    def test_reach_is_reported_when_it_was_collected(self):
+        """Views cover every published post; reactions only the pressed ones."""
+        from app.agents.marketolog import MarketologAgent
+
+        block = MarketologAgent._performance_block(
+            {
+                "published": 9,
+                "by_pillar": {
+                    "sales": {"posts": 5, "measured": 1, "avg_reactions": 2.0,
+                              "viewed": 5, "avg_views": 830},
+                },
+                "recent_topics": [],
+            }
+        )
+        assert "830 ko'rish" in block
+
+    def test_reach_is_omitted_when_it_was_not(self):
+        from app.agents.marketolog import MarketologAgent
+
+        block = MarketologAgent._performance_block(
+            {"published": 9, "by_pillar": {"sales": {"posts": 5, "measured": 0}}, "recent_topics": []}
+        )
+        assert "ko'rish" not in block
 
     def test_unmeasured_pillar_is_labelled_not_averaged(self):
         from app.agents.marketolog import MarketologAgent
@@ -437,7 +460,7 @@ class TestEarlyReturns:
         assert "post yo'q" in report.note
 
     async def test_video_editor_returns_an_unusable_plan_without_a_transcript(self):
-        from app.agents.video_editor import VideoEditRequest, VideoEditorAgent
+        from app.agents.video_editor import VideoEditorAgent, VideoEditRequest
 
         plan = await VideoEditorAgent(session=None).run(
             VideoEditRequest(business=make_business(), segments=[], duration=20.0)

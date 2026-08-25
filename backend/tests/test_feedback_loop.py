@@ -72,21 +72,46 @@ class TestReactionCapture:
     """Telegram pushes reaction totals; they have to land on the right item."""
 
     @staticmethod
-    def _event(message_id: int, reactions):
-        return SimpleNamespace(message_id=message_id, reactions=reactions)
+    def _event(message_id: int, reactions, *, chat_id: int = -1001, username: str = "kanal"):
+        # A real MessageReactionCountUpdated always carries the chat; the
+        # handler needs it to tell one client's channel from another's.
+        return SimpleNamespace(
+            message_id=message_id,
+            reactions=reactions,
+            chat=SimpleNamespace(id=chat_id, username=username),
+        )
 
     @staticmethod
     def _reaction(emoji: str, total: int):
         return SimpleNamespace(type=SimpleNamespace(emoji=emoji), total_count=total)
 
-    async def _run(self, monkeypatch, item, event):
+    async def _run(self, monkeypatch, item, event, *, owner=None):
         from app.bot.handlers import reactions as handler
 
-        repo = SimpleNamespace(by_telegram_message=AsyncMock(return_value=item))
-        monkeypatch.setattr(handler, "ContentItemRepository", lambda session: repo)
+        self.repo = SimpleNamespace(by_telegram_message=AsyncMock(return_value=item))
+        creds = SimpleNamespace(business_for_channel=AsyncMock(return_value=owner))
+        monkeypatch.setattr(handler, "ContentItemRepository", lambda session: self.repo)
+        monkeypatch.setattr(handler, "CredentialsRepository", lambda session: creds)
         session = SimpleNamespace(flush=AsyncMock())
         await handler.record_reactions(event, session)
         return session
+
+    @pytest.mark.asyncio
+    async def test_the_lookup_is_scoped_to_the_channel_that_fired(self, monkeypatch):
+        """A message id repeats across channels, so the id alone is not enough."""
+        owner = uuid.uuid4()
+        item = SimpleNamespace(id=uuid.uuid4(), metrics={})
+        await self._run(monkeypatch, item, self._event(9, [self._reaction("👍", 1)]), owner=owner)
+
+        self.repo.by_telegram_message.assert_awaited_once_with("9", business_id=owner)
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_channel_still_looks_up_without_a_scope(self, monkeypatch):
+        """Better a best-effort match than dropping the only signal we get."""
+        item = SimpleNamespace(id=uuid.uuid4(), metrics={})
+        await self._run(monkeypatch, item, self._event(9, [self._reaction("👍", 1)]), owner=None)
+
+        self.repo.by_telegram_message.assert_awaited_once_with("9", business_id=None)
 
     @pytest.mark.asyncio
     async def test_totals_and_breakdown_are_stored(self, monkeypatch):

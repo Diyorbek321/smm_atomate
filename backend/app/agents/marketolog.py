@@ -129,10 +129,14 @@ class MarketologAgent(BaseAgent):
             posts = int(bucket.get("posts") or 0)
             measured = int(bucket.get("measured") or 0)
             average = bucket.get("avg_reactions")
+            views = bucket.get("avg_views")
+            reach = f", o'rtacha {views} ko'rish" if views else ""
             if average is None:
-                rows.append(f"- {pillar}: {posts} post, reaksiya o'lchanmagan")
+                rows.append(f"- {pillar}: {posts} post{reach}, reaksiya o'lchanmagan")
             else:
-                rows.append(f"- {pillar}: {posts} post, {measured} tasi o'lchangan, o'rtacha {average} reaksiya")
+                rows.append(
+                    f"- {pillar}: {posts} post{reach}, {measured} tasida reaksiya, o'rtacha {average}"
+                )
 
         topics = performance.get("recent_topics") or []
         parts = [f"NATIJA (so'nggi 60 kun, {performance.get('published')} post):"]

@@ -16,6 +16,7 @@ from aiogram.types import MessageReactionCountUpdated
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
+from app.repositories.business import CredentialsRepository
 from app.repositories.content import ContentItemRepository
 from app.utils.dates import utcnow
 
@@ -33,10 +34,18 @@ async def record_reactions(
     event carries the current totals, not a delta.
     """
     message_id = str(event.message_id)
-    item = await ContentItemRepository(session).by_telegram_message(message_id)
+    # Scoped to the channel the event came from: a message id repeats across
+    # channels, so an unscoped lookup eventually records one client's
+    # reactions against another client's post.
+    business_id = await CredentialsRepository(session).business_for_channel(
+        chat_id=event.chat.id, username=getattr(event.chat, "username", None)
+    )
+    item = await ContentItemRepository(session).by_telegram_message(
+        message_id, business_id=business_id
+    )
     if item is None:
         # Anything the channel posted by hand, or from before this shipped.
-        log.debug("reaction_unmatched", message_id=message_id)
+        log.debug("reaction_unmatched", message_id=message_id, chat=event.chat.id)
         return
 
     breakdown = {

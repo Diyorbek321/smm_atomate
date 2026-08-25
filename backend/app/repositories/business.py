@@ -112,6 +112,27 @@ class CredentialsRepository(BaseRepository[BusinessCredentials]):
         stmt = select(BusinessCredentials).where(BusinessCredentials.business_id == business_id)
         return (await self.session.execute(stmt)).scalars().one_or_none()
 
+    async def business_for_channel(
+        self, *, chat_id: int | str | None = None, username: str | None = None
+    ) -> uuid.UUID | None:
+        """Which business owns the channel a Telegram update came from.
+
+        `tg_channel_id` holds either `@name` or a numeric id depending on how
+        the owner connected it, so both are tried. Without this, anything keyed
+        off a channel update has to look content up by message id alone — and a
+        message id repeats across channels.
+        """
+        candidates = [str(c).strip() for c in (chat_id, username) if c is not None and str(c).strip()]
+        if not candidates:
+            return None
+        wanted = {c.lstrip("@").lower() for c in candidates}
+
+        stmt = select(BusinessCredentials).where(BusinessCredentials.tg_channel_id.is_not(None))
+        for row in (await self.session.execute(stmt)).scalars().all():
+            if str(row.tg_channel_id).lstrip("@").lower() in wanted:
+                return row.business_id
+        return None
+
     async def get_or_create(self, business_id: uuid.UUID) -> BusinessCredentials:
         credentials = await self.for_business(business_id)
         if credentials is None:

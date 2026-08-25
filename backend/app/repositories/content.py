@@ -190,16 +190,28 @@ class ContentItemRepository(BaseRepository[ContentItem]):
         by_pillar: dict[str, dict[str, float]] = {}
         for item in items:
             bucket = by_pillar.setdefault(
-                item.pillar.value, {"posts": 0, "reactions": 0, "measured": 0}
+                item.pillar.value,
+                {"posts": 0, "reactions": 0, "measured": 0, "views": 0, "viewed": 0},
             )
             bucket["posts"] += 1
-            reactions = (item.metrics or {}).get("reactions")
+            metrics = item.metrics or {}
+            reactions = metrics.get("reactions")
             if isinstance(reactions, int):
                 bucket["reactions"] += reactions
                 bucket["measured"] += 1
+            # Reach, collected off the public channel page — see
+            # `app.tasks.metrics`. Counted separately from reactions because
+            # the two cover different posts: every post gets views, only a
+            # pressed one gets reactions.
+            views = metrics.get("views")
+            if isinstance(views, int) and views > 0:
+                bucket["views"] += views
+                bucket["viewed"] += 1
         for bucket in by_pillar.values():
             measured = bucket["measured"]
             bucket["avg_reactions"] = round(bucket["reactions"] / measured, 1) if measured else None
+            viewed = bucket["viewed"]
+            bucket["avg_views"] = round(bucket["views"] / viewed) if viewed else None
 
         return {
             "published": len(items),
@@ -275,10 +287,33 @@ class ContentItemRepository(BaseRepository[ContentItem]):
         rows = (await self.session.execute(stmt)).all()
         return [line for line in (" ".join(filter(None, row)).strip() for row in rows) if line]
 
-    async def by_telegram_message(self, message_id: str) -> ContentItem | None:
-        """The item a channel message came from, by its Telegram message id."""
+    async def by_telegram_message(
+        self, message_id: str, *, business_id: uuid.UUID | None = None
+    ) -> ContentItem | None:
+        """The item a channel message came from, by its Telegram message id.
+
+        A message id is unique **within a channel**, never across them: two
+        clients both have a message 9, and they are different posts. Pass
+        `business_id` wherever the caller knows it — without it this returns
+        whichever row happens to come first, which is how one client's numbers
+        end up on another client's post.
+        """
         stmt = select(ContentItem).where(ContentItem.tg_message_id == str(message_id))
+        if business_id is not None:
+            stmt = stmt.where(ContentItem.business_id == business_id)
         return (await self.session.execute(stmt)).scalars().first()
+
+    async def by_telegram_messages(
+        self, business_id: uuid.UUID, message_ids: list[str]
+    ) -> Sequence[ContentItem]:
+        """The same lookup for a whole page of messages, in one query."""
+        if not message_ids:
+            return []
+        stmt = select(ContentItem).where(
+            ContentItem.business_id == business_id,
+            ContentItem.tg_message_id.in_([str(m) for m in message_ids]),
+        )
+        return (await self.session.execute(stmt)).scalars().all()
 
     async def by_ids(self, item_ids: list[uuid.UUID]) -> Sequence[ContentItem]:
         if not item_ids:
