@@ -109,6 +109,12 @@ class KnowledgeBase(UUIDMixin, TimestampMixin, Base):
             missing.append("faq")
         if not (self.teacher_profiles or self.success_stories):
             missing.append("social_proof")
+        # Deliberately absent from `compute_completeness`: this drives which
+        # question gets asked next, and adding an eighth check would drop every
+        # existing profile's score and could push one back below the finish
+        # threshold. A profile with no competitors listed is still complete.
+        if not self.competitors:
+            missing.append("competitors")
         return missing
 
     @property

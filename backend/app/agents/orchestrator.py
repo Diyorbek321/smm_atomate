@@ -17,6 +17,7 @@ from app.agents.designer import DesignerAgent, DesignRequest
 from app.agents.editor import EditorAgent, EditorRequest, EditorResult
 from app.agents.hook import HookAgent, HookRequest
 from app.agents.marketolog import MarketingRequest, MarketologAgent
+from app.agents.scout import ScoutAgent, ScoutRequest
 from app.agents.strategist import StrategistAgent, StrategyRequest
 from app.agents.visual import VisualAgent, VisualRequest
 from app.core.config import settings
@@ -36,6 +37,7 @@ from app.models.knowledge_base import KnowledgeBase
 from app.repositories.business import BusinessRepository, KnowledgeBaseRepository
 from app.repositories.content import ContentItemRepository, ContentPlanRepository
 from app.schemas.content import CopyOutput, PlanSlot, StrategyOutput
+from app.services.telegram_scout import scout, unresolved
 from app.utils.dates import iso_week, next_monday, slot_to_datetime, utcnow
 
 log = get_logger(__name__)
@@ -219,7 +221,14 @@ class ContentPipeline:
         # marketolog is the only thing that acts on them, so it runs here
         # rather than on its own schedule.
         briefed = "\n\n".join(
-            filter(None, [await self._analysis(business, performance), extra_instructions])
+            filter(
+                None,
+                [
+                    await self._analysis(business, performance),
+                    await self._trends(business, knowledge),
+                    extra_instructions,
+                ],
+            )
         )
 
         agent = MarketologAgent(session=self.session, usage=self.usage)
@@ -274,6 +283,46 @@ class ContentPipeline:
                 business=str(business.id),
                 confidence=report.confidence,
                 recommendations=len(report.recommendations),
+            )
+        return instructions
+
+    async def _trends(self, business: Business, knowledge: KnowledgeBase) -> str:
+        """What the competitors published lately, as the marketolog should read it.
+
+        The only outward-looking step in the pipeline. Everything it needs comes
+        from `KnowledgeBase.competitors`, which onboarding has always collected
+        and nothing has ever read — a business with none set gets exactly the
+        plan it got before this existed.
+        """
+        if not settings.use_scout_agent:
+            return ""
+
+        entries = list(knowledge.competitors or []) if knowledge else []
+        if not entries:
+            return ""
+
+        snapshots = await scout(entries, limit=settings.scout_max_channels)
+        missing = unresolved(entries)
+        if not snapshots:
+            if missing:
+                # Worth saying once: the owner named competitors we cannot read.
+                log.info("scout_no_channels", business=str(business.id), named=missing[:3])
+            return ""
+
+        agent = ScoutAgent(session=self.session, usage=self.usage)
+        report = await agent.run(
+            ScoutRequest(
+                business=business, knowledge=knowledge, snapshots=snapshots, unresolved=missing
+            )
+        )
+        instructions = report.as_instructions()
+        if instructions:
+            log.info(
+                "trends_briefed",
+                business=str(business.id),
+                channels=len(snapshots),
+                themes=len(report.themes),
+                gaps=len(report.gaps),
             )
         return instructions
 

@@ -29,6 +29,13 @@ INTERVIEW_QUESTIONS: list[tuple[str, str]] = [
     ("social_proof", "O'quvchilaringizning eng yaxshi natijalari qanday? O'qituvchilar haqida ayting."),
     ("faq", "Mijozlar eng ko'p qanday savol beradi? 3-4 tasini javobi bilan ayting."),
     ("contact", "Aloqa uchun telefon raqami va Telegram username'ingizni yuboring."),
+    # Last on purpose: it is the only question whose answer the owner may not
+    # have to hand, and the profile is usable without it.
+    (
+        "competitors",
+        "Raqobatchilaringizning Telegram kanallarini yuboring — nomini emas, "
+        "HAVOLASINI (masalan @kanal yoki t.me/kanal). 2-3 tasi yetarli.",
+    ),
 ]
 
 
@@ -320,6 +327,24 @@ class OnboardingAgent(BaseAgent):
                 list(knowledge.preferred_hashtags or []) + list(extraction.preferred_hashtags)
             )
             updated.append("preferred_hashtags")
+
+        if extraction.competitors:
+            # Deduplicated on the resolved handle so "@x", "t.me/x" and "X" do
+            # not become three competitors; unresolvable names are kept as
+            # typed, because asking the owner for the link is the next step.
+            from app.services.telegram_scout import extract_handle
+
+            existing = list(knowledge.competitors or [])
+            seen = {(extract_handle(c) or c.strip()).lower() for c in existing}
+            for entry in extraction.competitors:
+                text = entry.strip()
+                identity = (extract_handle(text) or text).lower()
+                if not text or identity in seen:
+                    continue
+                seen.add(identity)
+                existing.append(text[:120])
+            knowledge.competitors = existing[:12]
+            updated.append("competitors")
 
         for field_name in ("phone", "telegram_username", "instagram_username", "address", "working_hours"):
             value = getattr(extraction, field_name, None)

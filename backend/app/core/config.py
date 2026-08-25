@@ -183,6 +183,13 @@ class Settings(BaseSettings):
     #: extra Whisper pass over the source; falls back to silence-trim on any
     #: failure.
     use_video_editor_agent: bool = True
+    #: Once per plan (weekly) — reads competitors' public Telegram channels and
+    #: reports what is earning attention in the niche. The only agent here that
+    #: looks outside the client's own knowledge base.
+    use_scout_agent: bool = True
+    #: Channels read per run. Each is one HTTP fetch of a public preview page,
+    #: sequential and paced, so this is a politeness budget as much as a cost.
+    scout_max_channels: int = 5
 
     # --- Behaviour -------------------------------------------------------
     default_timezone: str = "Asia/Tashkent"

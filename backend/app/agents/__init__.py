@@ -21,6 +21,7 @@ from app.agents.researcher import (
     ResearchRequest,
     merge_into_knowledge,
 )
+from app.agents.scout import ScoutAgent, ScoutRequest, TrendReport
 from app.agents.strategist import StrategistAgent, StrategyRequest, allocate_pillars
 from app.agents.video_editor import EditPlan, VideoEditorAgent, VideoEditRequest
 from app.agents.visual import VisualAgent, VisualOutput, VisualRequest
@@ -54,8 +55,11 @@ __all__ = [
     "ResearchFindings",
     "ResearchRequest",
     "ResearcherAgent",
+    "ScoutAgent",
+    "ScoutRequest",
     "StrategistAgent",
     "StrategyRequest",
+    "TrendReport",
     "VideoEditRequest",
     "VideoEditorAgent",
     "VisualAgent",

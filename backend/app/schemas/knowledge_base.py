@@ -109,6 +109,9 @@ class KnowledgeExtraction(BaseModel):
     working_hours: str | None = None
     target_audience: str | None = None
     preferred_hashtags: list[str] = Field(default_factory=list)
+    #: Rival channels, as @handles or t.me links. A name alone cannot be
+    #: resolved to a channel, so the prompt asks for the link.
+    competitors: list[str] = Field(default_factory=list)
     next_question: str | None = Field(
         default=None, description="Follow-up question in Uzbek, or null when the profile is complete"
     )
