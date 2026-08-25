@@ -86,6 +86,9 @@ class BrandKit(BaseModel):
 
     typography: Typography = Field(default_factory=Typography)
     voice: Voice = Field(default_factory=Voice)
+    #: The line a clip signs off with, under the name. Empty is a valid answer
+    #: and the honest default — see `app.agents.kinetic.outro_tagline`.
+    tagline: str = ""
     #: Which logo file to place on which background. Empty falls back to
     #: `KnowledgeBase.logo_url` for both.
     logo_on_dark: str = ""
@@ -145,6 +148,7 @@ def kit_for(stored: dict[str, Any] | None) -> BrandKit:
             dont=_clean_rules(voice_raw.get("dont")),
             banned_words=_clean_words(voice_raw.get("banned_words")),
         ),
+        tagline=str(stored.get("tagline") or "").strip()[:MAX_RULE],
         logo_on_dark=str(stored.get("logo_on_dark", "")).strip(),
         logo_on_light=str(stored.get("logo_on_light", "")).strip(),
     )

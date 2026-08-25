@@ -18,6 +18,7 @@ from app.core.logging import get_logger
 from app.models.business import Business
 from app.models.knowledge_base import KnowledgeBase
 from app.services.brand_assets import photo_library, prop_library
+from app.services.brand_kit import kit_for
 from app.services.kinetic import (
     KineticResult,
     KineticSpec,
@@ -138,6 +139,46 @@ def fallback_script(topic: str, business_name: str, length: str) -> list[Scene]:
     return scenes
 
 
+#: The outro line is drawn centred at font 32 on a fixed-width card, so it
+#: cannot wrap or shrink. Longer than this and it runs off both edges.
+TAGLINE_MAX = 42
+
+
+def outro_tagline(knowledge: KnowledgeBase | None) -> str:
+    """The line under the business name on the closing card.
+
+    This was one client's corporate positioning, written straight into the
+    shared outro, so every other business signed its clip off with a language
+    centre's slogan. It comes from the brand now.
+
+    An empty answer is a real answer: the card already carries the name, the
+    logo and the phone number, and somebody else's slogan under a bakery's name
+    is worse than no slogan at all.
+    """
+    if knowledge is None:
+        return ""
+
+    kit = kit_for(getattr(knowledge, "brand_kit", None))
+    tagline = kit.tagline.strip()
+    if tagline:
+        # Dropped rather than cut: a slogan sliced mid-word reads as a bug.
+        return tagline if len(tagline) <= TAGLINE_MAX else ""
+
+    # No tagline set — a USP is the closest thing the knowledge base holds.
+    for usp in (knowledge.usps or []):
+        text = str(usp).strip()
+        if text and len(text) <= TAGLINE_MAX:
+            return text
+    return ""
+
+
+def build_outro(business: Business, knowledge: KnowledgeBase | None) -> Scene:
+    """The closing card: the name, and whatever the brand says under it."""
+    return Scene(
+        kind="outro", text=business.name, sub=outro_tagline(knowledge), duration=2.6
+    )
+
+
 class KineticAgent(BaseAgent):
     name = "kinetic"
 
@@ -179,9 +220,7 @@ class KineticAgent(BaseAgent):
             scenes = fallback_script(topic, business.name, length)
 
         # The outro card is deterministic — never trusted to the model.
-        scenes.append(
-            Scene(kind="outro", text=business.name, sub="Bilim Shahri sizni kutmoqda", duration=2.6)
-        )
+        scenes.append(build_outro(business, knowledge))
 
         # The model writes for rhythm, not for reading speed — give every scene
         # (the outro included) at least the time a viewer needs to finish it.
