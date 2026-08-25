@@ -11,11 +11,14 @@ The LLM only writes the script; the visuals are deterministic
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel, Field
 
 from app.agents.base import BaseAgent, knowledge_context
 from app.core.logging import get_logger
 from app.models.business import Business
+from app.models.enums import BusinessCategory
 from app.models.knowledge_base import KnowledgeBase
 from app.services.brand_assets import photo_library, prop_library
 from app.services.brand_kit import kit_for
@@ -113,29 +116,228 @@ class KineticScript(BaseModel):
     scenes: list[KineticSceneSpec] = Field(default_factory=list)
 
 
-def fallback_script(topic: str, business_name: str, length: str) -> list[Scene]:
-    """LLM'siz ham klip chiqadi — deterministik zaxira ssenariy."""
-    head = topic or "Yangiliklarimiz bor"
-    scenes = [
-        Scene(kind="text", text=head, accent=head.split()[-1], duration=2.3),
-        Scene(kind="text", text="Sifatli ta'lim — yaqin joyda", accent="ta'lim", duration=1.9),
-        Scene(kind="prop", text="Bizni ko'ring", accent="ko'ring", sub=business_name, duration=2.2),
-        Scene(kind="text", text="Joylar soni cheklangan", accent="cheklangan", duration=1.9),
+@dataclass(frozen=True, slots=True)
+class ClipFrame:
+    """The scaffolding of a fallback clip for one kind of business.
+
+    Deliberately holds no claims and no figures. Everything here has to be
+    true of *every* business in the category, and the only sentences that
+    clear that bar are questions, section labels and invitations. Anything
+    stronger — an experience figure, a promise about class sizes — either
+    comes out of the knowledge base or does not go on screen at all.
+    """
+
+    #: Section labels for the long cut.
+    chapters: tuple[str, str, str]
+    #: Said in place of a USP when the knowledge base has none. A question, so
+    #: it cannot be false for the business it is standing in for.
+    claim: str
+    #: A second one, for the same reason. Two are needed because a clip with a
+    #: single scaffolding line either repeats it or runs short.
+    invitation: str
+    #: What this kind of business sells — labels an offering on screen.
+    offering_word: str
+    #: The closing line. A functional CTA, which the empty-phrase rule allows.
+    closing: str
+
+
+GENERIC_FRAME = ClipFrame(
+    chapters=("Biz haqimizda", "Nima taklif qilamiz", "Bog'lanish"),
+    claim="Sizga nima kerak?",
+    invitation="Bir ko'rib chiqing",
+        offering_word="xizmat",
+    closing="Bugun bog'laning",
+)
+
+CLIP_FRAMES: dict[BusinessCategory, ClipFrame] = {
+    BusinessCategory.EDUCATION: ClipFrame(
+        chapters=("Yo'nalishlar", "Ustozlar", "Natija"),
+        claim="Qaysi yo'nalish sizga mos?",
+        invitation="Darsga kelib ko'ring",
+        offering_word="kurs",
+        closing="Bugun boshlang",
+    ),
+    BusinessCategory.FOOD_BEVERAGE: ClipFrame(
+        chapters=("Menyu", "Oshxona", "Buyurtma"),
+        claim="Bugun nima yeymiz?",
+        invitation="Kelib tatib ko'ring",
+        offering_word="taom",
+        closing="Buyurtma bering",
+    ),
+    BusinessCategory.RETAIL: ClipFrame(
+        chapters=("Assortiment", "Do'kon", "Yetkazish"),
+        claim="Nimani qidiryapsiz?",
+        invitation="Yangi kelganlar bor",
+        offering_word="mahsulot",
+        closing="Do'konga keling",
+    ),
+    BusinessCategory.BEAUTY: ClipFrame(
+        chapters=("Xizmatlar", "Ustalar", "Natija"),
+        claim="Yangi ko'rinish vaqtimi?",
+        invitation="Bir kelib ko'ring",
+        offering_word="xizmat",
+        closing="Navbat oling",
+    ),
+    BusinessCategory.HEALTHCARE: ClipFrame(
+        chapters=("Yo'nalishlar", "Shifokorlar", "Qabul"),
+        claim="Qaysi savolingiz bor?",
+        invitation="Savolingizni bering",
+        offering_word="xizmat",
+        closing="Qabulga yoziling",
+    ),
+    BusinessCategory.REAL_ESTATE: ClipFrame(
+        chapters=("Obyektlar", "Joylashuv", "Shartlar"),
+        claim="Qanday uy qidiryapsiz?",
+        invitation="Ko'rikka kelib ko'ring",
+        offering_word="obyekt",
+        closing="Ko'rikka yoziling",
+    ),
+    BusinessCategory.TECH: ClipFrame(
+        chapters=("Yechimlar", "Jamoa", "Ish jarayoni"),
+        claim="Qanday masalani yechamiz?",
+        invitation="Keling, gaplashamiz",
+        offering_word="xizmat",
+        closing="Loyihani muhokama qilamiz",
+    ),
+}
+#: Same shelf, same clip — as in the shooting brief's catalogue.
+CLIP_FRAMES[BusinessCategory.ECOMMERCE] = CLIP_FRAMES[BusinessCategory.RETAIL]
+
+
+def frame_for(category: BusinessCategory | str) -> ClipFrame:
+    """This category's frame, or the generic one for anything unmapped."""
+    try:
+        return CLIP_FRAMES.get(BusinessCategory(category), GENERIC_FRAME)
+    except ValueError:
+        return GENERIC_FRAME
+
+
+def _known_lines(knowledge: KnowledgeBase | None, limit: int = 3) -> list[str]:
+    """Short, true things this business has actually told us."""
+    if knowledge is None:
+        return []
+    lines: list[str] = []
+    for usp in (knowledge.usps or []):
+        text = str(usp).strip()
+        if text and len(text) <= FALLBACK_LINE_MAX:
+            lines.append(text)
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def _known_stats(knowledge: KnowledgeBase | None, limit: int = 2) -> list[Scene]:
+    """Figures the owner supplied, as stat cards. Never anything we made up."""
+    if knowledge is None:
+        return []
+
+    from app.agents.facts import collect_facts
+
+    stats: list[Scene] = []
+    for fact in collect_facts(knowledge, limit=6):
+        if not fact.is_priced or len(fact.label) > FALLBACK_LINE_MAX:
+            continue
+        stats.append(Scene(kind="stat", value=fact.value[:18], text=fact.label, duration=2.4))
+        if len(stats) >= limit:
+            break
+    return stats
+
+
+#: Longer than this and the line does not fit the card it is drawn on.
+FALLBACK_LINE_MAX = 34
+
+
+def fallback_script(
+    topic: str, business: Business, knowledge: KnowledgeBase | None, length: str
+) -> list[Scene]:
+    """A clip without the model — built from this business, not from a template.
+
+    The scaffolding is per category so a bakery does not sign off with a
+    language centre's chapter headings, and the *content* comes from the
+    knowledge base so the clip says something only this business could say.
+    When the knowledge base is empty the clip gets shorter and plainer rather
+    than padded with claims nobody can stand behind.
+    """
+    frame = frame_for(business.category)
+    head = (topic or business.name or "Yangiliklarimiz bor").strip()
+
+    offerings = [
+        str(entry.get("name", "")).strip()
+        for entry in (knowledge.key_offerings if knowledge else []) or []
+        if str(entry.get("name", "")).strip()
     ]
-    if length == "long":
-        scenes = [
-            Scene(kind="text", text=head, accent=head.split()[-1], duration=2.4),
-            Scene(kind="chapter", value="01", text="Yo'nalishlar", duration=1.8),
-            Scene(kind="text", text="Til, matematika va IT", accent="IT", duration=2.3),
-            Scene(kind="prop", text="Zamonaviy sinflar", accent="Zamonaviy", duration=2.5),
-            Scene(kind="chapter", value="02", text="Ustozlar", duration=1.8),
-            Scene(kind="stat", value="10 yil", text="tajriba", duration=2.4),
-            Scene(kind="text", text="Har bir o'quvchiga alohida e'tibor", accent="alohida",
-                  duration=2.4),
-            Scene(kind="chapter", value="03", text="Natija", duration=1.8),
-            Scene(kind="text", text="Bilim — kelajak poydevori", accent="poydevori", duration=2.4),
-            Scene(kind="text", text="Bugun qadam tashlang", accent="Bugun", duration=2.2),
+
+    # One pool, drawn from in order and never twice. Repetition is the failure
+    # this shape exists to prevent: a thin knowledge base used to leave the
+    # same question on screen twice in one clip, which reads as a broken render
+    # rather than a short one.
+    #
+    # The frame's two scaffolding lines are the floor, not filler — once even
+    # those are spent the clip says less instead of saying something again. The
+    # business name is deliberately absent: it is already the prop card's
+    # caption and the outro's headline.
+    pool: list[str] = []
+    seen: set[str] = set()
+    for candidate in [*offerings, *_known_lines(knowledge), frame.claim, frame.invitation]:
+        text = candidate.strip()
+        key = text.lower()
+        if text and key not in seen and len(text) <= FALLBACK_LINE_MAX:
+            seen.add(key)
+            pool.append(text)
+
+    used = 0
+
+    def take() -> str:
+        """The next unused line, or empty once the pool is spent."""
+        nonlocal used
+        if used < len(pool):
+            used += 1
+            return pool[used - 1]
+        return ""
+
+    def say(text: str, duration: float, sub: str = "") -> Scene:
+        return Scene(
+            kind="text", text=text, accent=text.split()[-1], sub=sub, duration=duration
+        )
+
+    opening = Scene(kind="text", text=head, accent=head.split()[-1], duration=2.3)
+    # A bare product name needs the noun: "Somsa" alone is a word on a card,
+    # "Somsa / taom" tells a viewer who arrived mid-scroll what it is.
+    first = take()
+    offering_sub = frame.offering_word if offerings and first == offerings[0] else ""
+
+    def maybe_say(duration: float) -> list[Scene]:
+        """A spoken scene when the pool still has one, nothing when it does not."""
+        text = take()
+        return [say(text, duration)] if text else []
+
+    if length != "long":
+        return [
+            opening,
+            say(first, 2.1, offering_sub),
+            *maybe_say(1.9),
+            Scene(kind="prop", text=frame.closing, accent=frame.closing.split()[0],
+                  sub=business.name, duration=2.2),
         ]
+
+    scenes = [
+        opening,
+        Scene(kind="chapter", value="01", text=frame.chapters[0], duration=1.8),
+        say(first, 2.3, offering_sub),
+        # The prop card carries a rendered object, so it is captioned with the
+        # brand rather than a chapter name it would otherwise duplicate.
+        Scene(kind="prop", text=business.name, accent=business.name.split()[0], duration=2.5),
+        Scene(kind="chapter", value="02", text=frame.chapters[1], duration=1.8),
+        *maybe_say(2.4),
+        Scene(kind="chapter", value="03", text=frame.chapters[2], duration=1.8),
+    ]
+    # Supplied figures go in before the close; an empty knowledge base simply
+    # yields none, and the clip is that much shorter.
+    scenes.extend(_known_stats(knowledge))
+    scenes.extend(maybe_say(2.4))
+    scenes.append(
+        Scene(kind="text", text=frame.closing, accent=frame.closing.split()[0], duration=2.2)
+    )
     return scenes
 
 
@@ -217,7 +419,7 @@ class KineticAgent(BaseAgent):
         minimum = 8 if length == "long" else 3
         if len(scenes) < minimum:
             log.info("kinetic_script_too_short", got=len(scenes), length=length)
-            scenes = fallback_script(topic, business.name, length)
+            scenes = fallback_script(topic, business, knowledge, length)
 
         # The outro card is deterministic — never trusted to the model.
         scenes.append(build_outro(business, knowledge))

@@ -570,12 +570,18 @@ class TestKineticEngine:
             assert early.tobytes() != late.tobytes()     # animated, not static
 
     def test_long_script_falls_back_when_model_returns_too_little(self):
-        from app.agents.kinetic import fallback_script
+        """The structural contract only. `test_kinetic_fallback.py` owns the rest.
 
-        scenes = fallback_script("Kuzgi qabul", "Shanghai School", "long")
+        A `stat` scene is deliberately no longer guaranteed: figures come from
+        the knowledge base now, and this business has none to give.
+        """
+        from app.agents.kinetic import fallback_script
+        from tests.test_agents import make_business
+
+        scenes = fallback_script("Kuzgi qabul", make_business(), None, "long")
         assert len(scenes) >= 8
         assert any(s.kind == "chapter" for s in scenes)
-        assert any(s.kind == "stat" for s in scenes)
+        assert all((s.text or s.value).strip() for s in scenes)
 
     def test_long_clip_is_stretched_to_its_promised_runtime(self):
         from app.agents.kinetic import KineticAgent
