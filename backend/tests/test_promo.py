@@ -7,14 +7,10 @@ let a model's copy overflow the layout it was authored for.
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
-
 import pytest
 
 from app.services import promo
 from app.services.promo_families import BPM, BUILDERS, FAMILIES, Brand
-from app.services.music import snap_to_beat
 
 
 def on_beat(value: float, bpm: int) -> bool:
@@ -149,7 +145,7 @@ class TestFamilies:
     @pytest.mark.parametrize("family", FAMILIES)
     def test_scenes_run_back_to_back_with_no_gap(self, family):
         scenes = self.sample(family)["scenes"]
-        for before, after in zip(scenes, scenes[1:]):
+        for before, after in zip(scenes, scenes[1:], strict=False):
             assert before["at"][1] == pytest.approx(after["at"][0])
 
     @pytest.mark.parametrize("family", FAMILIES)
@@ -283,7 +279,6 @@ class TestFamilySelection:
     def test_a_family_needing_footage_is_not_chosen_without_it(self):
         """Otherwise the clip renders with a hole where the video should be."""
         from app.agents.promo import NEEDS_FOOTAGE, PILLAR_FAMILIES
-        from app.models.enums import ContentPillar
 
         for pillar, names in PILLAR_FAMILIES.items():
             if any(n in NEEDS_FOOTAGE for n in names):
@@ -323,7 +318,7 @@ class TestMusicVariety:
 
     def test_cuts_snap_to_the_family_tempo_not_a_global_one(self):
         """A cut on 120 while the bed plays 128 is worse than no alignment."""
-        from app.services.promo_families import BUILDERS, Brand, PROFILES
+        from app.services.promo_families import BUILDERS, PROFILES, Brand
 
         b = Brand.from_colors({"accent": "#C9A227"}, mark="M", cta="c")
         script = BUILDERS["muddat"](b, kicker="K", pressure="P", count_from=12, count_to=3,
@@ -392,7 +387,7 @@ class TestMusicVariety:
         """Older callers import PROGRESSION directly."""
         from app.services.music import MOODS, PROGRESSION
 
-        assert PROGRESSION == MOODS["calm"]
+        assert MOODS["calm"] == PROGRESSION
 
 
 class TestCopyGate:
@@ -444,8 +439,8 @@ class TestCopyGate:
             {"kind": "table", "rows": [{"left": "Ingliz", "right": ""}]})))
 
     def test_a_real_family_script_passes_clean(self):
-        from app.services.promo_qc import blocking, inspect
         from app.services.promo_families import BUILDERS, Brand
+        from app.services.promo_qc import blocking, inspect
 
         b = Brand.from_colors({"accent": "#C9A227"}, mark="Shanghai School", cta="Bepul dars")
         script = BUILDERS["raqam"](b, title="Raqamlarda",

@@ -97,9 +97,9 @@ class TestStrategistRespectsThePlan:
     """The plan skeleton is deterministic, so it can be asserted directly."""
 
     def _slots(self, plan: Plan, posts: int = 8):
-        from app.agents.strategist import StrategistAgent, StrategyRequest, allocate_pillars
-        from app.agents.strategist import pillar_ratios_for
         from datetime import date
+
+        from app.agents.strategist import StrategistAgent, StrategyRequest, allocate_pillars, pillar_ratios_for
 
         client = business(plan, posts_per_week=posts)
         request = StrategyRequest(
@@ -127,9 +127,9 @@ class TestStrategistRespectsThePlan:
 
     @pytest.mark.parametrize("plan", list(Plan))
     def test_the_prompt_only_offers_allowed_types(self, plan):
-        from app.agents.strategist import StrategistAgent, StrategyRequest, allocate_pillars
-        from app.agents.strategist import pillar_ratios_for
         from datetime import date
+
+        from app.agents.strategist import StrategistAgent, StrategyRequest, allocate_pillars, pillar_ratios_for
 
         client = business(plan, posts_per_week=8)
         request = StrategyRequest(
@@ -144,10 +144,10 @@ class TestStrategistRespectsThePlan:
         assert not [name for name in locked if name in offered]
 
     def test_llm_slots_outside_the_plan_are_repaired(self):
-        from app.agents.strategist import StrategistAgent, StrategyRequest, allocate_pillars
-        from app.agents.strategist import pillar_ratios_for
-        from app.schemas.content import PlanSlot
         from datetime import date
+
+        from app.agents.strategist import StrategistAgent, StrategyRequest, allocate_pillars, pillar_ratios_for
+        from app.schemas.content import PlanSlot
 
         client = business(Plan.START, posts_per_week=4)
         request = StrategyRequest(
@@ -230,7 +230,9 @@ class TestVisualRespectsThePlan:
 
 def _item():
     from app.models.content_item import ContentItem
-    from app.models.enums import ContentType as CT, ContentPillar as CP, Platform
+    from app.models.enums import ContentPillar as CP
+    from app.models.enums import ContentType as CT
+    from app.models.enums import Platform
 
     return ContentItem(
         business_id=None,
