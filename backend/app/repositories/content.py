@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
-from app.models.content_item import ContentItem
+from app.models.content_item import SUPERSEDED_NOTE, ContentItem
 from app.models.content_plan import ContentPlan
 from app.models.enums import ContentItemStatus, ContentPlanStatus
 from app.models.prompt_template import PromptTemplate
@@ -168,11 +168,18 @@ class ContentItemRepository(BaseRepository[ContentItem]):
     async def recent_performance(
         self, business_id: uuid.UUID, *, days: int = 60, topics: int = 24
     ) -> dict[str, Any]:
-        """What went out lately and how it landed.
+        """What went out lately, how it landed, and what has already been said.
 
-        Two questions the planner could not previously ask: which pillar earns
-        a response, and what has already been covered. Only published items
-        count — a draft nobody saw says nothing about what works.
+        Those are two different questions and they need two different windows.
+        *How it landed* can only be asked of published posts — a draft nobody
+        saw says nothing about what works. *What has already been covered* must
+        include every draft, because a topic the planner wrote last Tuesday is
+        used up whether or not the owner approved it.
+
+        Reading only published rows conflated the two, and on an account that
+        reviews before publishing it left the planner with almost no memory: it
+        proposed the same handful of topics every run, the owner rejected them,
+        the rejections were invisible, and the next run proposed them again.
         """
         since = utcnow() - timedelta(days=days)
         stmt = (
@@ -213,11 +220,59 @@ class ContentItemRepository(BaseRepository[ContentItem]):
             viewed = bucket["viewed"]
             bucket["avg_views"] = round(bucket["views"] / viewed) if viewed else None
 
+        covered, rejected = await self._covered_topics(business_id, since=since, limit=topics)
         return {
             "published": len(items),
             "by_pillar": by_pillar,
-            "recent_topics": [item.topic for item in items[:topics] if item.topic.strip()],
+            #: Everything the pipeline has already written about, whatever
+            #: became of it — not just what reached a follower.
+            "recent_topics": covered,
+            #: The subset the owner personally turned down. The strongest
+            #: "do not write this again" signal the system ever receives, and
+            #: until now the only one it threw away.
+            "rejected_topics": rejected,
         }
+
+    async def _covered_topics(
+        self, business_id: uuid.UUID, *, since: datetime, limit: int
+    ) -> tuple[list[str], list[str]]:
+        """(everything already covered, what the owner rejected), newest first.
+
+        A plan regeneration retires the previous drafts by rejecting them, so
+        `REJECTED` on its own does not mean the owner disliked anything — see
+        `SUPERSEDED_NOTE`. Those rows still count as covered ground; they just
+        do not count as feedback.
+        """
+        stmt = (
+            select(ContentItem.topic, ContentItem.status, ContentItem.review_notes)
+            .where(
+                ContentItem.business_id == business_id,
+                ContentItem.created_at >= since,
+                ContentItem.status.in_(
+                    [
+                        ContentItemStatus.PUBLISHED,
+                        ContentItemStatus.APPROVED,
+                        ContentItemStatus.PENDING_REVIEW,
+                        ContentItemStatus.REJECTED,
+                    ]
+                ),
+            )
+            .order_by(ContentItem.created_at.desc())
+            .limit(limit * 4)
+        )
+        covered: list[str] = []
+        rejected: list[str] = []
+        seen: set[str] = set()
+        for topic, status, notes in (await self.session.execute(stmt)).all():
+            topic = (topic or "").strip()
+            key = topic.lower()
+            if not topic or key in seen:
+                continue
+            seen.add(key)
+            covered.append(topic)
+            if status == ContentItemStatus.REJECTED and (notes or "").strip() != SUPERSEDED_NOTE:
+                rejected.append(topic)
+        return covered[:limit], rejected[:limit]
 
     async def produced_between(
         self, business_id: uuid.UUID, *, days: int = 30, limit: int = 400
@@ -258,13 +313,21 @@ class ContentItemRepository(BaseRepository[ContentItem]):
         )
         return (await self.session.execute(stmt)).scalars().all()
 
-    async def recent_headlines(
+    async def recent_subjects(
         self, business_id: uuid.UUID, *, days: int = 30, limit: int = 60
-    ) -> list[str]:
-        """What this business already said lately, for the duplicate check.
+    ) -> list[tuple[str, str]]:
+        """`(headline, topic)` for everything written lately, newest first.
 
         Rejected drafts are included on purpose: the owner turning a post down
         is the strongest possible signal not to write it again next week.
+
+        The two fields are kept apart rather than joined into one string. They
+        are compared against a candidate's own headline and topic, and an
+        overlap measure divides by the shorter of the two token sets — so
+        gluing a long headline to a short topic changes the answer in both
+        directions. A repeated topic hides inside the padding, and a short
+        headline scores as "contained in" any long line that happens to use
+        its words.
         """
         since = utcnow() - timedelta(days=days)
         stmt = (
@@ -285,7 +348,8 @@ class ContentItemRepository(BaseRepository[ContentItem]):
             .limit(limit)
         )
         rows = (await self.session.execute(stmt)).all()
-        return [line for line in (" ".join(filter(None, row)).strip() for row in rows) if line]
+        subjects = [((headline or "").strip(), (topic or "").strip()) for headline, topic in rows]
+        return [pair for pair in subjects if any(pair)]
 
     async def by_telegram_message(
         self, message_id: str, *, business_id: uuid.UUID | None = None

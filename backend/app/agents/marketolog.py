@@ -119,28 +119,42 @@ class MarketologAgent(BaseAgent):
         Reaction totals are only meaningful next to how many posts carried
         them, so both are shown; a pillar with one measured post is not
         evidence and the prompt is told to treat it that way.
+
+        The topic lists are printed whether or not anything was published. An
+        account still waiting on its first approval has no numbers but plenty
+        of history, and withholding that history is what let this agent brief
+        the same commercial angle week after week.
         """
-        if not performance or not performance.get("published"):
-            return "NATIJA: hali e'lon qilingan post yo'q — birinchi haftani bilim bazasiga tayanib rejalashtir."
+        parts: list[str] = []
+        if performance and performance.get("published"):
+            by_pillar = performance.get("by_pillar") or {}
+            rows = []
+            for pillar, bucket in by_pillar.items():
+                posts = int(bucket.get("posts") or 0)
+                measured = int(bucket.get("measured") or 0)
+                average = bucket.get("avg_reactions")
+                views = bucket.get("avg_views")
+                reach = f", o'rtacha {views} ko'rish" if views else ""
+                if average is None:
+                    rows.append(f"- {pillar}: {posts} post{reach}, reaksiya o'lchanmagan")
+                else:
+                    rows.append(
+                        f"- {pillar}: {posts} post{reach}, {measured} tasida reaksiya, o'rtacha {average}"
+                    )
+            parts.append(f"NATIJA (so'nggi 60 kun, {performance.get('published')} post):")
+            parts.extend(rows or ["- pillar bo'yicha ma'lumot yo'q"])
+        else:
+            parts.append(
+                "NATIJA: hali e'lon qilingan post yo'q — birinchi haftani bilim bazasiga tayanib rejalashtir."
+            )
 
-        by_pillar = performance.get("by_pillar") or {}
-        rows = []
-        for pillar, bucket in by_pillar.items():
-            posts = int(bucket.get("posts") or 0)
-            measured = int(bucket.get("measured") or 0)
-            average = bucket.get("avg_reactions")
-            views = bucket.get("avg_views")
-            reach = f", o'rtacha {views} ko'rish" if views else ""
-            if average is None:
-                rows.append(f"- {pillar}: {posts} post{reach}, reaksiya o'lchanmagan")
-            else:
-                rows.append(
-                    f"- {pillar}: {posts} post{reach}, {measured} tasida reaksiya, o'rtacha {average}"
-                )
-
-        topics = performance.get("recent_topics") or []
-        parts = [f"NATIJA (so'nggi 60 kun, {performance.get('published')} post):"]
-        parts.extend(rows or ["- pillar bo'yicha ma'lumot yo'q"])
+        topics = (performance or {}).get("recent_topics") or []
         if topics:
-            parts.append("SO'NGGI MAVZULAR (takrorlama): " + compact_json(topics[:24]))
+            parts.append(
+                "ALLAQACHON YOZILGAN MAVZULAR (chiqqani ham, ko'rikda turgani ham — takrorlama): "
+                + compact_json(topics[:24])
+            )
+        rejected = (performance or {}).get("rejected_topics") or []
+        if rejected:
+            parts.append("EGA RAD ETGAN MAVZULAR (qaytib taklif qilma): " + compact_json(rejected[:10]))
         return "\n".join(parts)

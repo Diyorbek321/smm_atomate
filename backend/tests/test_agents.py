@@ -203,48 +203,66 @@ class TestEditorStaticChecks:
         issues = self._run(copy)
         assert any(i.severity == "major" and "umumiy ibora" in i.problem for i in issues)
 
-    def test_a_headline_repeated_from_last_month_is_flagged(self):
+    @staticmethod
+    def _duplicate_request(headline: str, topic: str, subjects: list[tuple[str, str]]):
         text = "Sentabr guruhida 12 joy qoldi. Batafsil: +998901234567"
-        copy = CopyOutput(
-            headline="Sentabr guruhiga qabul boshlandi",
-            caption_tg=text,
-            caption_ig=text,
-            cta="Yozilish: +998901234567",
-        )
-        agent = EditorAgent()
-        request = EditorRequest(
+        return EditorRequest(
             business=make_business(),
             knowledge=make_knowledge(),
-            copy=copy,
+            copy=CopyOutput(
+                headline=headline,
+                caption_tg=text,
+                caption_ig=text,
+                cta="Yozilish: +998901234567",
+            ),
             content_type=ContentType.FEED_POST,
-            topic="Sentabr qabuli",
+            topic=topic,
             deep_check=False,
-            recent_headlines=["Sentabr guruhiga qabul ochildi sentabr guruhi"],
+            recent_subjects=subjects,
         )
-        issues = agent.static_checks(request)
-        # Similar enough for the reviewer to see, not identical enough to redo.
+
+    def test_a_headline_repeated_from_last_month_is_flagged(self):
+        """Overlapping but not interchangeable — the reviewer decides."""
+        issues = EditorAgent().static_checks(
+            self._duplicate_request(
+                "Sentabr guruhiga bepul sinov darsi",
+                "Sentabr sinov darsi",
+                [("Sentabr guruhiga darsi jadvali chiqdi", "Dars jadvali")],
+            )
+        )
         assert any(i.field == "headline" and i.severity == "major" for i in issues)
 
     def test_a_near_identical_headline_is_critical_not_just_flagged(self):
         """At this much overlap it is the same post — rewrite, do not annotate."""
-        text = "Sentabr guruhida 12 joy qoldi. Batafsil: +998901234567"
-        copy = CopyOutput(
-            headline="Sentabr guruhiga qabul boshlandi",
-            caption_tg=text,
-            caption_ig=text,
-            cta="Yozilish: +998901234567",
+        issues = EditorAgent().static_checks(
+            self._duplicate_request(
+                "Sentabr guruhiga qabul boshlandi",
+                "Sentabr qabuli",
+                [("Sentabr guruhiga qabul ochildi", "Sentabr qabuli")],
+            )
         )
-        agent = EditorAgent()
-        request = EditorRequest(
-            business=make_business(),
-            knowledge=make_knowledge(),
-            copy=copy,
-            content_type=ContentType.FEED_POST,
-            topic="Sentabr qabuli",
-            deep_check=False,
-            recent_headlines=["Sentabr guruhiga qabul ochildi Sentabr qabuli"],
+        assert any(i.field == "headline" and i.severity == "critical" for i in issues)
+
+    def test_a_long_headline_no_longer_hides_a_repeated_topic(self):
+        """The regression this check was written for.
+
+        A topic word-for-word last week's used to be joined to a long selling
+        headline before comparison. The overlap measure divides by the shorter
+        token set, so the padding dropped the score under the threshold and the
+        same post shipped week after week with a clean editor report.
+        """
+        issues = EditorAgent().static_checks(
+            self._duplicate_request(
+                "STANDARD tarif: freelancer o'rniga avtomatik tizim",
+                "STANDARD tarif tarkibi",
+                [
+                    (
+                        "SMM uchun oyiga 1 690 000 so'm: STANDARD tarif tarkibi",
+                        "STANDARD tarif tarkibi va imkoniyatlari",
+                    )
+                ],
+            )
         )
-        issues = agent.static_checks(request)
         assert any(i.field == "headline" and i.severity == "critical" for i in issues)
 
     def test_an_unrelated_headline_is_not_flagged_as_a_repeat(self):
@@ -263,7 +281,7 @@ class TestEditorStaticChecks:
             content_type=ContentType.FEED_POST,
             topic="Ustoz yutug'i",
             deep_check=False,
-            recent_headlines=["Sentabr guruhiga qabul ochildi"],
+            recent_subjects=[("Sentabr guruhiga qabul ochildi", "Sentabr qabuli")],
         )
         assert not [i for i in agent.static_checks(request) if i.field == "headline"]
 

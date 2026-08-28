@@ -62,9 +62,10 @@ class EditorRequest:
     content_type: ContentType
     topic: str
     deep_check: bool = True   # set False to run only the local rules (fast/offline)
-    #: Headlines this business published in the last month. Empty is fine — a
-    #: first post cannot repeat itself.
-    recent_headlines: list[str] = field(default_factory=list)
+    #: `(headline, topic)` for everything this business wrote in the last
+    #: month — published, awaiting review, or rejected. Empty is fine: a first
+    #: post cannot repeat itself.
+    recent_subjects: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -236,10 +237,22 @@ class EditorAgent(BaseAgent):
                 "Kamida yarmini aniq raqam, sana yoki ism bilan almashtiring",
             )
 
-        if request.recent_headlines:
-            twin, score = most_similar(
-                " ".join(filter(None, [copy.headline, request.topic])), request.recent_headlines
-            )
+        if request.recent_subjects:
+            # Topic against topics, headline against headlines, worse of the
+            # two wins. Both halves used to be glued into one string on both
+            # sides, which quietly disabled the check: the overlap measure
+            # divides by the shorter token set, so a long marketing headline
+            # padded out a topic that was word-for-word last week's until it
+            # scored 0.38 instead of 1.00.
+            twin, score = "", 0.0
+            for candidate, index in ((request.topic, 1), (copy.headline, 0)):
+                if not candidate.strip():
+                    continue
+                other, value = most_similar(
+                    candidate, [pair[index] for pair in request.recent_subjects if pair[index]]
+                )
+                if value > score:
+                    twin, score = other, value
             if score >= DUPLICATE_THRESHOLD:
                 # Two tiers for the same reason the fact check has two: a
                 # near-identical post should be rewritten, a merely similar one

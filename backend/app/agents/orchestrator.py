@@ -24,7 +24,7 @@ from app.core.config import settings
 from app.core.exceptions import NotFoundError
 from app.core.logging import get_logger
 from app.models.business import Business
-from app.models.content_item import ContentItem
+from app.models.content_item import SUPERSEDED_NOTE, ContentItem
 from app.models.content_plan import ContentPlan
 from app.models.enums import (
     ContentItemStatus,
@@ -99,7 +99,7 @@ class ContentPipeline:
         self.items = ContentItemRepository(session)
         #: Filled once per orchestrator, not once per slot — eight posts in a
         #: week would otherwise mean eight identical queries.
-        self._recent_headlines: dict[uuid.UUID, list[str]] = {}
+        self._recent_subjects: dict[uuid.UUID, list[tuple[str, str]]] = {}
 
     # ------------------------------------------------------------------ #
     # Full plan generation
@@ -174,7 +174,7 @@ class ContentPipeline:
             for existing in list(plan.items):
                 if existing.status in (ContentItemStatus.PENDING_REVIEW, ContentItemStatus.DRAFT):
                     existing.status = ContentItemStatus.REJECTED
-                    existing.review_notes = "qayta yaratilgani uchun almashtirildi"
+                    existing.review_notes = SUPERSEDED_NOTE
             plan.status = ContentPlanStatus.GENERATING
             plan.generation_error = None
             await self.session.flush()
@@ -389,17 +389,59 @@ class ContentPipeline:
         await self.session.flush()
         return items, failures
 
-    async def _recent_history(self, business: Business) -> list[str]:
-        """Last month's headlines for this business, fetched at most once."""
-        cached = self._recent_headlines.get(business.id)
+    async def _recent_history(
+        self, business: Business, *, exclude: tuple[str, str] | None = None
+    ) -> list[tuple[str, str]]:
+        """Last month's `(headline, topic)` pairs, fetched at most once.
+
+        ``exclude`` drops one pair from the result, for the single case where
+        the caller *is* the row it would be compared against: regenerating a
+        post reuses its own topic, so without this the duplicate check reports
+        every rewrite as a copy of the post being rewritten.
+        """
+        cached = self._recent_subjects.get(business.id)
         if cached is None:
             try:
-                cached = await self.items.recent_headlines(business.id)
+                cached = list(await self.items.recent_subjects(business.id))
             except Exception as exc:                     # history is a nicety
-                log.warning("recent_headlines_failed", error=str(exc)[:200])
+                log.warning("recent_subjects_failed", error=str(exc)[:200])
                 cached = []
-            self._recent_headlines[business.id] = cached
+            self._recent_subjects[business.id] = cached
+        if exclude:
+            return [pair for pair in cached if pair != exclude]
         return cached
+
+    def _remember_subject(
+        self,
+        business: Business,
+        copy: CopyOutput,
+        slot: PlanSlot,
+        *,
+        replaces: tuple[str, str] | None = None,
+    ) -> None:
+        """Add what we just wrote to this run's history.
+
+        Eight slots in one plan are generated against a snapshot taken before
+        any of them existed, so nothing stopped slot six from repeating slot
+        two. The database only learns about them at flush; the check needs to
+        know now.
+
+        ``replaces`` is for a rewrite, which updates a row rather than adding
+        one. Recorded as an addition instead, the superseded version would stay
+        in the cache under its old headline and the *next* rewrite — excluded
+        only by its current one — would be told it duplicates itself.
+        """
+        pair = (copy.headline.strip(), slot.topic.strip())
+        cached = self._recent_subjects.setdefault(business.id, [])
+        if replaces is not None and replaces in cached:
+            cached.remove(replaces)
+        if any(pair) and pair not in cached:
+            cached.insert(0, pair)
+
+    @staticmethod
+    def _headline_lines(subjects: list[tuple[str, str]]) -> list[str]:
+        """The writer is shown openings, not the plan's bookkeeping."""
+        return [headline for headline, _ in subjects if headline]
 
     # ------------------------------------------------------------------ #
     # Single item generation
@@ -413,9 +455,14 @@ class ContentPipeline:
         extra_instructions: str = "",
         previous_caption: str = "",
         render_image: bool = True,
+        exclude_from_history: tuple[str, str] | None = None,
     ) -> tuple[CopyOutput, EditorResult, object]:
         copywriter = CopywriterAgent(session=self.session, usage=self.usage)
         editor = EditorAgent(session=self.session, usage=self.usage)
+
+        # Fetched before the first draft, not after it. The editor could only
+        # ever catch a repeat once it existed; the writer can avoid writing one.
+        history = await self._recent_history(business, exclude=exclude_from_history)
 
         copy_request = CopyRequest(
             business=business,
@@ -427,10 +474,10 @@ class ContentPipeline:
             goal=slot.goal,
             extra_instructions=extra_instructions,
             previous_caption=previous_caption,
+            recent_headlines=self._headline_lines(history),
         )
         copy = await copywriter.run(copy_request)
 
-        history = await self._recent_history(business)
         review = await editor.run(
             EditorRequest(
                 business=business,
@@ -438,7 +485,7 @@ class ContentPipeline:
                 copy=copy,
                 content_type=slot.content_type,
                 topic=slot.topic,
-                recent_headlines=history,
+                recent_subjects=history,
             )
         )
 
@@ -464,7 +511,7 @@ class ContentPipeline:
                     copy=copy,
                     content_type=slot.content_type,
                     topic=slot.topic,
-                    recent_headlines=history,
+                    recent_subjects=history,
                 )
             )
 
@@ -505,6 +552,7 @@ class ContentPipeline:
                 design=design,
             )
         )
+        self._remember_subject(business, copy, slot, replaces=exclude_from_history)
         return copy, review, visual
 
     async def _sharpen_hook(
@@ -514,7 +562,7 @@ class ContentPipeline:
         slot: PlanSlot,
         copy: CopyOutput,
         editor: EditorAgent,
-        history: list[str],
+        history: list[tuple[str, str]],
     ) -> CopyOutput:
         """Rewrite the opening line of a caption the editor has already passed.
 
@@ -556,7 +604,7 @@ class ContentPipeline:
                     content_type=slot.content_type,
                     topic=slot.topic,
                     deep_check=False,
-                    recent_headlines=history,
+                    recent_subjects=history,
                 )
             )
             return {issue.problem for issue in issues if issue.severity == "critical"}
@@ -711,6 +759,9 @@ class ContentPipeline:
             extra_instructions=instruction,
             previous_caption=item.caption_tg,
             render_image=regenerate_image,
+            # The row being rewritten is itself in the history table. Compared
+            # against it, every rewrite is a perfect duplicate of itself.
+            exclude_from_history=((item.headline or "").strip(), (item.topic or "").strip()),
         )
 
         item.headline = copy.headline[:300]

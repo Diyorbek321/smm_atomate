@@ -22,6 +22,7 @@ from app.models.enums import (
 from app.models.knowledge_base import KnowledgeBase
 from app.schemas.content import PlanSlot, StrategyOutput
 from app.utils.json_tools import compact_json
+from app.utils.similarity import DUPLICATE_THRESHOLD, similarity
 
 log = get_logger(__name__)
 
@@ -106,41 +107,65 @@ class StrategyRequest:
     posts_count: int = 10
     extra_instructions: str = ""
     #: What the last two months actually did — see
-    #: :meth:`ContentItemRepository.recent_performance`. Empty for a business
-    #: with nothing published yet, which is the honest state to plan from.
+    #: :meth:`ContentItemRepository.recent_performance`. Carries the covered
+    #: and rejected topic lists even when nothing has been published yet, which
+    #: is exactly the account that needs them most.
     performance: dict[str, Any] = field(default_factory=dict)
 
 
 def _performance_block(performance: dict[str, Any]) -> str:
     """Last two months, as the planner should see them.
 
-    Reactions are reported per pillar rather than per post: one post going wide
-    says little, a pillar consistently earning nothing says a lot. Topics are
-    listed so the plan stops re-covering what went out three weeks ago — the
-    old duplicate check only looked inside the plan being generated.
+    Two independent sections, because they answer to different evidence.
+    *Numbers* need published posts: reactions are reported per pillar rather
+    than per post, since one post going wide says little and a pillar
+    consistently earning nothing says a lot.
+
+    *Covered ground* needs no publishing at all, and gating it on the numbers
+    was the bug that made every plan a copy of the last one. An account that
+    reviews before publishing has almost nothing published, so the whole block
+    used to come back empty — and the planner, with no memory of the topics it
+    had proposed and had rejected days earlier, proposed them again.
     """
-    if not performance or not performance.get("published"):
+    if not performance:
         return ""
 
-    lines = [f"OXIRGI 60 KUN: {performance['published']} ta post chiqdi."]
-    ranked = sorted(
-        performance.get("by_pillar", {}).items(),
-        key=lambda kv: (kv[1].get("avg_reactions") is None, -(kv[1].get("avg_reactions") or 0)),
-    )
-    for name, stats in ranked:
-        average = stats.get("avg_reactions")
-        measured = "o'lchanmagan" if average is None else f"o'rtacha {average} reaksiya"
-        lines.append(f"  {name}: {int(stats['posts'])} post · {measured}")
-    if len(ranked) > 1 and ranked[0][1].get("avg_reactions"):
-        lines.append(
-            f"Eng ko'p javob bergan ustun — {ranked[0][0]}. Ulushni o'zgartirma, "
-            "lekin shu ustundagi mavzularni kuchliroq ishla."
+    lines: list[str] = []
+    published = performance.get("published") or 0
+    if published:
+        lines.append(f"OXIRGI 60 KUN: {published} ta post chiqdi.")
+        ranked = sorted(
+            performance.get("by_pillar", {}).items(),
+            key=lambda kv: (kv[1].get("avg_reactions") is None, -(kv[1].get("avg_reactions") or 0)),
         )
+        for name, stats in ranked:
+            average = stats.get("avg_reactions")
+            measured = "o'lchanmagan" if average is None else f"o'rtacha {average} reaksiya"
+            lines.append(f"  {name}: {int(stats['posts'])} post · {measured}")
+        if len(ranked) > 1 and ranked[0][1].get("avg_reactions"):
+            lines.append(
+                f"Eng ko'p javob bergan ustun — {ranked[0][0]}. Ulushni o'zgartirma, "
+                "lekin shu ustundagi mavzularni kuchliroq ishla."
+            )
 
     topics = performance.get("recent_topics") or []
     if topics:
-        lines.append("YAQINDA CHIQQAN MAVZULAR (takrorlama, yangi burchak top):")
+        lines.append(
+            "ALLAQACHON YOZILGAN MAVZULAR — chiqqani ham, ko'rikda turgani ham, "
+            "almashtirilgani ham. Bu ro'yxat yopiq: takrorlama, birortasini "
+            "qayta yozma, yangi burchak top:"
+        )
         lines.append("  " + " · ".join(topics[:16]))
+
+    # Kept separate and stated harder than the covered list. A topic nobody
+    # got round to is merely used up; one the owner read and turned down is an
+    # instruction, and it is the signal this pipeline used to discard entirely.
+    rejected = performance.get("rejected_topics") or []
+    if rejected:
+        lines.append(
+            "EGA RAD ETGAN MAVZULAR (qat'iy taqiq — bu mavzularni boshqa burchakdan ham taklif qilma):"
+        )
+        lines.append("  " + " · ".join(rejected[:10]))
     return "\n".join(lines)
 
 
@@ -267,10 +292,16 @@ class StrategistAgent(BaseAgent):
         buckets: dict[ContentPillar, list[PlanSlot]] = {p: [] for p in PILLAR_DISTRIBUTION}
 
         allowed_types = pillar_content_types(request.business.capabilities)
-        seen_topics: set[str] = set()
+        # Exact-match dedup let "STANDARD tarif tarkibi" and "STANDARD tarif
+        # tarkibi va imkoniyatlari" both through, which is two posts about the
+        # same thing in the same week. The overlap measure is what the editor
+        # already uses to judge a repeat; the plan should apply it first.
+        accepted_topics: list[str] = []
         for slot in slots:
-            topic_key = slot.topic.strip().lower()
-            if not slot.topic.strip() or topic_key in seen_topics:
+            topic = slot.topic.strip()
+            if not topic or any(
+                similarity(topic, seen) >= DUPLICATE_THRESHOLD for seen in accepted_topics
+            ):
                 continue
             if slot.content_type not in allowed_types[slot.pillar]:
                 slot.content_type = default_content_type(
@@ -280,7 +311,7 @@ class StrategistAgent(BaseAgent):
                 slot.platform = Platform.TELEGRAM
             slot.day_offset = min(max(0, slot.day_offset), max(0, request.horizon_days - 1))
             slot.hour = min(23, max(0, slot.hour))
-            seen_topics.add(topic_key)
+            accepted_topics.append(topic)
             buckets[slot.pillar].append(slot)
 
         final: list[PlanSlot] = []

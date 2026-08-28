@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from app.agents.base import BaseAgent, knowledge_context
 from app.agents.facts import (
@@ -37,6 +37,10 @@ log = get_logger(__name__)
 CAROUSEL_SLIDES = (5, 8)
 QUIZ_ANSWERS = (3, 4)
 
+#: How many past headlines are shown to the writer. Enough to reveal a pattern,
+#: short enough that it does not crowd out the knowledge base and the facts.
+HISTORY_LINES = 12
+
 
 @dataclass(slots=True)
 class CopyRequest:
@@ -49,6 +53,10 @@ class CopyRequest:
     goal: str = ""
     extra_instructions: str = ""
     previous_caption: str = ""
+    #: Headlines and topics this business already wrote in the last month.
+    #: `previous_caption` covers one rewrite of one post; this covers the month,
+    #: which is the scale at which a feed starts repeating itself.
+    recent_headlines: list[str] = field(default_factory=list)
 
 
 def _states_the_phone(caption: str, phone: str) -> bool:
@@ -163,6 +171,8 @@ class CopywriterAgent(BaseAgent):
             blocks.append(
                 "AVVALGI VARIANT (uni takrorlama, yaxshila):\n" + request.previous_caption[:1500]
             )
+        if history := self._history_block(request.recent_headlines):
+            blocks.append(history)
         if request.extra_instructions:
             blocks.append(f"QO'SHIMCHA KO'RSATMA (eng yuqori ustuvorlik): {request.extra_instructions}")
 
@@ -172,6 +182,33 @@ class CopywriterAgent(BaseAgent):
 
         blocks.append(self._output_contract(request.content_type))
         return "\n\n".join(blocks)
+
+    @staticmethod
+    def _history_block(headlines: list[str]) -> str:
+        """The last month of openings, so this one does not become the twelfth.
+
+        Trimmed hard on purpose. The point is to show the model the *shape* it
+        keeps falling into — the same hook, the same four words — and a dozen
+        short lines do that as well as sixty long ones at a fraction of the
+        prompt. Anything past the first line of a headline is padding here.
+        """
+        seen: set[str] = set()
+        lines: list[str] = []
+        for headline in headlines:
+            trimmed = " ".join((headline or "").split())[:90]
+            key = trimmed.lower()
+            if not trimmed or key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"- {trimmed}")
+            if len(lines) >= HISTORY_LINES:
+                break
+        if not lines:
+            return ""
+        return (
+            "SHU BRENDDA YAQINDA YOZILGAN SARLAVHALAR — bularning birortasini "
+            "takrorlama, o'xshash ochilish va o'xshash burchakdan qoch:\n" + "\n".join(lines)
+        )
 
     @staticmethod
     def _output_contract(content_type: ContentType) -> str:

@@ -48,6 +48,13 @@ def _enum(enum_cls: type, name: str, length: int = 32) -> SAEnum:
     )
 
 
+#: Written into ``review_notes`` when a plan is regenerated and the previous
+#: draft is retired to make room. It is a rejection in the database and not one
+#: in the owner's head, so anything that reads rejections as owner feedback —
+#: the planner's "do not write this again" list — has to tell the two apart.
+SUPERSEDED_NOTE = "qayta yaratilgani uchun almashtirildi"
+
+
 class ContentItem(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "content_items"
     __table_args__ = (
