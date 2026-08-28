@@ -285,6 +285,160 @@ class TestFamilySelection:
                 assert [n for n in names if n not in NEEDS_FOOTAGE], pillar
 
 
+class TestClipStaysOnTopic:
+    """Asked for a clip about one thing, the writer returned another.
+
+    The brief was one line — `KLIP MAVZUSI: ...` — sitting after four thousand
+    characters of knowledge base, and it was simply not read. Asked for a clip
+    about a backend course, the model answered with the knowledge base's own
+    subject three times out of three, on the small model and on the large one.
+    These lock the brief into the position where it is actually obeyed, and
+    lock in the check that notices when it is not.
+    """
+
+    @staticmethod
+    def _script(*lines: str) -> dict:
+        return {"scenes": [{"lines": [{"kind": "display", "text": t} for t in lines]}]}
+
+    def test_copy_about_the_topic_passes(self):
+        from app.services.promo_qc import off_topic
+
+        assert not off_topic(
+            self._script("BACKEND KURSI", "Nazariya va amaliyot"),
+            "Backend dasturlash kursiga qabul",
+        )
+
+    def test_copy_about_something_else_is_caught(self):
+        from app.services.promo_qc import off_topic
+
+        assert off_topic(
+            self._script("SMMDA 3 TA XATO", "Faktsiz gaplar"),
+            "Backend dasturlash kursiga qabul",
+        )
+
+    def test_a_suffix_does_not_count_as_a_different_subject(self):
+        """Uzbek is agglutinative: `klinikalar` and `klinika` are one word."""
+        from app.services.promo_qc import off_topic
+
+        assert not off_topic(
+            self._script("KLINIKA SMM XATOLARI"), "Klinikalar uchun kontent xatolari"
+        )
+
+    def test_an_empty_brief_cannot_be_disobeyed(self):
+        """No topic is not a failed topic — never block a clip on a heuristic."""
+        from app.services.promo_qc import off_topic
+
+        assert not off_topic(self._script("Nimadir"), "")
+        assert not off_topic(self._script("Nimadir"), "va bilan uchun")
+
+    def test_the_brief_comes_after_the_knowledge_base(self):
+        """Position is the fix. The order here is the behaviour."""
+        import inspect as _inspect
+
+        from app.agents.promo import PromoAgent
+
+        source = _inspect.getsource(PromoAgent.write)
+        assert source.index("knowledge_context") < source.index("KLIP MAVZUSI")
+        assert source.index("KLIP MAVZUSI") < source.index("JSON qilib qaytar")
+
+    def test_the_knowledge_base_is_named_as_background(self):
+        import inspect as _inspect
+
+        from app.agents.promo import PromoAgent
+
+        assert "faqat fon" in _inspect.getsource(PromoAgent.write)
+
+
+class TestOffTopicNeverCostsAClip:
+    """The topic check is a heuristic, and a heuristic must not fail a render.
+
+    Blocking QC issues (blank lines, placeholders) raise after the retries are
+    spent — those are real defects. Drifting off the brief is different: a clip
+    about the wrong subject is still a clip, and a wrong verdict here would
+    cost the owner minutes of browser time and give back nothing.
+    """
+
+    @staticmethod
+    def _copy():
+        from app.agents.promo import ListItem, SanoqCopy
+
+        return SanoqCopy(
+            title="SMMDA 3 TA XATO",
+            subtitle="Postchi tizimi buni hal qiladi",
+            items=[
+                ListItem(head=f"XATO {i}", wrong=f"Noto'g'ri yondashuv {i}",
+                         right=f"To'g'ri yechim {i}")
+                for i in range(1, 4)
+            ],
+        )
+
+    async def _write(self, monkeypatch, topic: str):
+        from app.agents.promo import PromoAgent
+        from app.models.enums import ContentPillar
+        from tests.test_agents import make_business, make_knowledge
+
+        agent = PromoAgent()
+        calls: list[str] = []
+
+        async def fake_ask_json(prompt, schema, **kwargs):
+            calls.append(prompt)
+            return self._copy()
+
+        monkeypatch.setattr(agent, "ask_json", fake_ask_json)
+        written = await agent.write(
+            make_business(), make_knowledge(), topic,
+            pillar=ContentPillar.EDUCATIONAL, family="sanoq",
+        )
+        return written, calls
+
+    async def test_a_drifting_script_is_retried(self, monkeypatch):
+        _, calls = await self._write(monkeypatch, "Backend dasturlash kursiga qabul")
+        assert len(calls) == 2
+        assert "OLDINGI URINISH XATOSI" in calls[1]
+
+    async def test_it_is_shipped_rather_than_raised(self, monkeypatch):
+        written, _ = await self._write(monkeypatch, "Backend dasturlash kursiga qabul")
+        assert written.script["scenes"]
+
+    async def test_an_on_topic_script_is_accepted_first_time(self, monkeypatch):
+        _, calls = await self._write(monkeypatch, "SMMdagi xatolar")
+        assert len(calls) == 1
+
+
+class TestFamilyFollowsTheTopic:
+    """Every educational clip a business made was the same layout."""
+
+    PILLAR = None
+
+    def _family(self, topic: str, seed: int = 0) -> str:
+        from app.agents.promo import PromoAgent
+        from app.models.enums import ContentPillar
+
+        return PromoAgent.family_for(ContentPillar.EDUCATIONAL, seed, topic)
+
+    def test_the_same_topic_always_gets_the_same_layout(self):
+        assert self._family("Backend kursi") == self._family("Backend kursi")
+
+    def test_topics_do_not_all_collapse_onto_one_layout(self):
+        """With no seed this was `options[0]`, forever, for every topic."""
+        chosen = {self._family(f"mavzu raqami {i}") for i in range(40)}
+        assert len(chosen) > 1
+
+    def test_an_explicit_seed_still_wins(self):
+        """Callers that do choose a family must not be second-guessed."""
+        from app.agents.promo import PILLAR_FAMILIES
+        from app.models.enums import ContentPillar
+
+        options = PILLAR_FAMILIES[ContentPillar.EDUCATIONAL]
+        assert self._family("har qanday mavzu", seed=len(options)) == options[0]
+
+    def test_no_topic_and_no_seed_is_unchanged(self):
+        from app.agents.promo import PILLAR_FAMILIES
+        from app.models.enums import ContentPillar
+
+        assert self._family("") == PILLAR_FAMILIES[ContentPillar.EDUCATIONAL][0]
+
+
 class TestMusicVariety:
     """Ten distinct-looking families that all sound the same is nine wasted."""
 

@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.utils.similarity import tokens
+
 #: Text kinds a viewer reads. Props, rules and photos carry no copy.
 TEXT_KINDS = ("display", "serif", "kicker", "body", "option", "row", "table", "pill", "badge")
 
@@ -107,6 +109,49 @@ def reading_time(scene: dict) -> float:
     time for the words in it.
     """
     return max(_settle(scene) + SETTLE_MARGIN, _scene_words(scene) / WORDS_PER_SECOND)
+
+
+#: The shortest common opening that counts as the same word. Uzbek is
+#: agglutinative — a clip about "Backend dasturlash kursiga qabul" writes
+#: "Backend kursi", and a brief about "xatolar" is answered with "xato" — so
+#: whole-word matching says a perfectly on-topic script ignored its brief.
+#: Below this many characters the words have to match outright, or "bir" and
+#: "biznes" would count as the same subject.
+MIN_STEM = 4
+
+
+def _same_word(left: str, right: str) -> bool:
+    """Is one of these the other with a suffix on it?
+
+    Comparing a fixed-length prefix of both fails the moment one side is the
+    shorter word: `xato` and `xatolar` share a stem, but `xato`[:6] is `xato`
+    and `xatolar`[:6] is `xatola`. Comparing over the shorter of the two is
+    what actually asks the question.
+    """
+    shared = min(len(left), len(right))
+    if shared < MIN_STEM:
+        return left == right
+    return left[:shared] == right[:shared]
+
+
+def off_topic(script: dict, topic: str) -> bool:
+    """Does none of this copy mention what the clip was asked to be about?
+
+    Deliberately generous: one surviving stem anywhere in the script is
+    enough. The question is not whether the copy is *good*, it is whether the
+    model wrote about the requested subject at all — and until the brief moved
+    to the end of the prompt, it routinely did not: asked for a clip about a
+    backend course it returned the knowledge base's own subject, three times
+    out of three, on both models.
+
+    A topic with no content words (all stop words, or empty) is unanswerable,
+    so it passes rather than blocking a clip on a heuristic.
+    """
+    wanted = tokens(topic)
+    if not wanted:
+        return False
+    written = tokens(" ".join(text for _, _, text in _texts(script)))
+    return not any(_same_word(word, other) for word in wanted for other in written)
 
 
 def inspect(script: dict) -> list[Issue]:

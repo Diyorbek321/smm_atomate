@@ -24,7 +24,8 @@ from app.models.business import Business
 from app.models.enums import ContentPillar
 from app.models.knowledge_base import KnowledgeBase
 from app.services.promo_families import BUILDERS, Brand
-from app.services.promo_qc import blocking, inspect
+from app.services.promo_qc import blocking, inspect, off_topic
+from app.utils.text import fingerprint
 
 log = get_logger(__name__)
 
@@ -216,11 +217,24 @@ class PromoScript:
 
 class PromoAgent(BaseAgent):
     name = "promo"
+    #: One call renders one clip — minutes of browser time either way — so the
+    #: stronger model is close to free here, and it is measurably better at
+    #: staying on the brief it was given.
+    use_pro_model = True
 
     @staticmethod
-    def family_for(pillar: ContentPillar, seed: int = 0) -> str:
+    def family_for(pillar: ContentPillar, seed: int = 0, topic: str = "") -> str:
+        """Which layout this clip uses.
+
+        Nothing the bot queues passes a seed, so this was ``options[0]`` every
+        time: every educational clip a business ever made was a `sanoq` list,
+        whatever it was about. The topic breaks the tie when the caller has no
+        seed of its own — same subject, same layout; different subject,
+        possibly a different one.
+        """
         options = PILLAR_FAMILIES.get(pillar) or ["statement"]
-        return options[seed % len(options)]
+        index = seed or (fingerprint(topic) if topic.strip() else 0)
+        return options[index % len(options)]
 
     async def write(
         self,
@@ -235,7 +249,7 @@ class PromoAgent(BaseAgent):
         footage: str | None = None,
         seed: int = 0,
     ) -> PromoScript:
-        chosen = family or self.family_for(pillar, seed)
+        chosen = family or self.family_for(pillar, seed, topic)
         if chosen in NEEDS_FOOTAGE and not footage:
             alternatives = [f for f in PILLAR_FAMILIES.get(pillar, []) if f not in NEEDS_FOOTAGE]
             fallback = alternatives[seed % len(alternatives)] if alternatives else "statement"
@@ -243,12 +257,20 @@ class PromoAgent(BaseAgent):
             chosen = fallback
         schema = SCHEMAS[chosen]
         system = await self.system_prompt(SYSTEM, business_id=business.id)
-        prompt = "\n\n".join([
+        # The brief was already the last thing before the output instruction
+        # and was still ignored: asked for a clip about a backend course this
+        # returned the knowledge base's own subject — "SMMda 3 ta xato" —
+        # three times out of three, on the small model and on the large one.
+        # Position was not the problem. What fixed it was saying out loud what
+        # the knowledge base is *for*: four thousand characters of it read as
+        # the subject unless something tells the model it is background.
+        prompt = "\n\n".join(filter(None, [
             knowledge_context(business, knowledge),
             f"SHABLON: {chosen}",
-            f"KLIP MAVZUSI: {topic}",
+            "BILIM BAZASI — faqat fon: undan faqat shu mavzuga tegishli faktni ol.",
+            f"KLIP MAVZUSI (har bir sahna aynan shu haqda bo'lsin): {topic}" if topic.strip() else "",
             "Faqat so'ralgan maydonlarni JSON qilib qaytar.",
-        ])
+        ]))
         brand = Brand.from_colors(
             dict(knowledge.brand_colors) if knowledge and knowledge.brand_colors else {},
             mark=business.name,
@@ -258,32 +280,52 @@ class PromoAgent(BaseAgent):
         # The gate runs before rendering, not after: a clip is minutes of
         # browser time, and blank or duplicated copy is cheap to catch here and
         # expensive to discover in the finished file.
-        last_blocking: list[str] = []
+        fatal: list[str] = []
+        complaints: list[str] = []
+        #: A script that renders but answers the wrong brief. Kept, because a
+        #: clip about the wrong subject still beats no clip, and because the
+        #: retry is allowed to come back worse.
+        drifted_script: dict | None = None
+
         for attempt in range(ATTEMPTS):
             copy = await self.ask_json(
-                prompt if attempt == 0 else f"{prompt}\n\nOLDINGI URINISH XATOSI: "
-                + "; ".join(last_blocking) + "\nShu xatolarni takrorlama.",
+                prompt if not complaints else f"{prompt}\n\nOLDINGI URINISH XATOSI: "
+                + "; ".join(complaints) + "\nShu xatolarni takrorlama.",
                 schema, system=system,
                 temperature=0.85 if attempt == 0 else 0.6,
                 max_tokens=1400,
             )
             script = BUILDERS[chosen](brand, **self._payload(copy, chosen, business, photo, footage))
             issues = inspect(script)
-            last_blocking = blocking(issues)
+            fatal = blocking(issues)
             for issue in issues:
                 if not issue.blocking:
                     log.info("promo_copy_warn", family=chosen, detail=issue.detail)
-            if not last_blocking:
+
+            drifted = bool(topic.strip()) and off_topic(script, topic)
+            if not fatal and not drifted:
                 log.info("promo_script_written", family=chosen, pillar=str(pillar),
                          seconds=script["duration"], scenes=len(script["scenes"]),
                          attempt=attempt + 1)
                 return PromoScript(family=chosen, script=script)
-            log.warning("promo_copy_rejected", family=chosen, attempt=attempt + 1,
-                        issues=last_blocking[:3])
+            if not fatal:
+                drifted_script = script
 
+            # Drifting off the brief is worth the retry we have already
+            # budgeted, but never worth failing a clip over: the check is a
+            # heuristic, and a wrong verdict must not cost the owner a render.
+            complaints = fatal or [
+                f"klip «{topic}» haqida emas edi — har bir sahna shu mavzuni gapirsin"
+            ]
+            log.warning("promo_copy_rejected", family=chosen, attempt=attempt + 1,
+                        off_topic=drifted, issues=complaints[:3])
+
+        if drifted_script is not None:
+            log.warning("promo_off_topic_shipped", family=chosen, topic=topic[:60])
+            return PromoScript(family=chosen, script=drifted_script)
         raise ProviderError(
             "promo",
-            f"«{chosen}» uchun yaroqli matn chiqmadi: " + "; ".join(last_blocking[:3]),
+            f"«{chosen}» uchun yaroqli matn chiqmadi: " + "; ".join(fatal[:3]),
         )
 
     @staticmethod
