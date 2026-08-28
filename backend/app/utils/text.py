@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 
@@ -90,6 +91,17 @@ _EMPTY_PHRASES = (
     "yangi bosqich",
     "birinchi qadam",
 )
+
+
+def fingerprint(value: str) -> int:
+    """A stable 64-bit integer for a string.
+
+    Not ``hash()``: that is salted per process, so the same input would map one
+    way in the API and another in the worker, and a value chosen from it would
+    move across a restart. This does not.
+    """
+    digest = hashlib.blake2b(value.strip().lower().encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big")
 
 
 def normalize_apostrophes(text: str) -> str:

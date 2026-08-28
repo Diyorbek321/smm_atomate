@@ -361,6 +361,7 @@ class VisualAgent(BaseAgent):
                 colors,
                 logo_bytes,
                 prefix=request.content_type.value,
+                signature=request.business.name,
             )
             return stored.url
         except Exception as exc:
@@ -394,7 +395,12 @@ class VisualAgent(BaseAgent):
                 frame_uri, brief.image_prompt or DEFAULT_MOTION_PROMPT, duration=6
             )
             overlay = video_service.build_overlay(clip_brief, colors, logo_bytes)
-            branded = await video_service.overlay_on_video(stored_ai.path, overlay)
+            branded = await video_service.overlay_on_video(
+                stored_ai.path,
+                overlay,
+                signature=request.business.name,
+                subject=request.topic or request.headline,
+            )
             stored = get_storage().save_bytes(
                 branded, prefix=f"{request.content_type.value}-ai", content_type="video/mp4"
             )

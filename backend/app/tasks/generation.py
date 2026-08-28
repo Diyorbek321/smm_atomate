@@ -432,6 +432,7 @@ async def run_video_edit(
             logo=logo,
             business_name=business.name,
             contact=contact,
+            topic=caption,
             settings_=EditSettings(),
             language=str(business.language),
             keep=keep,

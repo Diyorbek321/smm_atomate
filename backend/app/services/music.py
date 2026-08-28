@@ -33,6 +33,8 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.utils.text import fingerprint as _fingerprint
+
 SAMPLE_RATE = 44100
 
 #: Everything is written as semitones from A2, not as frequencies, so a
@@ -62,6 +64,93 @@ MOODS: dict[str, tuple[tuple[int, tuple[int, ...]], ...]] = {
 
 #: Kept for callers that predate moods.
 PROGRESSION = MOODS["calm"]
+
+#: A pulse per mood, so two clips that differ in harmony differ in tempo too.
+#: Same spirit as the promo families' per-family profiles — a countdown and a
+#: brand piece should not share a heartbeat.
+MOOD_TEMPO: dict[str, int] = {"calm": 112, "hopeful": 122, "tense": 126, "warm": 104}
+
+
+def _lever(fingerprint: int, byte: int, modulus: int) -> int:
+    """One choice, from its own slice of the fingerprint.
+
+    Taking every lever from the same remainder ties them together: two subjects
+    that happened to agree mod 64 came out with the same progression, the same
+    opening bar *and* the same shaker, which is three coincidences wearing one
+    hat. A different byte per lever makes them independent.
+    """
+    return (fingerprint >> (8 * byte)) % modulus
+
+
+def key_shift_for(signature: str) -> int:
+    """Semitones to transpose a brand's bed, from its name or mark.
+
+    Deliberately narrow (-3..+3): far enough that two businesses do not sound
+    like the same track, close enough that the bed stays in a register a phone
+    speaker reproduces.
+
+    This was ``sum(ord(c)) % 7``, which spreads badly — the two businesses on
+    this deployment, "Postchi" and "Shanghai School", both landed on -1. Seven
+    buckets is few enough that the hash has to be a real one.
+    """
+    return _lever(_fingerprint(signature), 6, 7) - 3 if signature.strip() else 0
+
+
+def mood_for(subject: str) -> str:
+    """Which progression this subject plays.
+
+    Exposed separately because the tempo has to be known before the bed is
+    rendered: the kinetic engine snaps every cut to the beat, so the pulse it
+    times against and the pulse it plays have to be the same number.
+    """
+    if not subject.strip():
+        return "calm"
+    names = sorted(MOODS)
+    return names[_lever(_fingerprint(subject), 0, len(names))]
+
+
+def energy_for(mood: str) -> str:
+    """Kick and hat density that suits the harmony."""
+    return "drive" if mood in ("hopeful", "tense") else "calm"
+
+
+def bed_spec(
+    seconds: float,
+    *,
+    signature: str = "",
+    subject: str = "",
+    bpm: int = 0,
+    energy: str = "",
+    mood: str = "",
+) -> MusicSpec:
+    """The bed for one clip: brand in the key, content in everything else.
+
+    Every lever this module offers — mood, key, rotation, the shaker seed —
+    existed and defaulted to one value, and three of the four render paths took
+    the defaults. The result was correct, tempo-locked, and identical: every
+    Reel, montage and clip the system had ever produced played the same four
+    chords in the same key starting on the same bar.
+
+    ``signature`` identifies the business, so its clips share a pitch centre —
+    a signature you hear rather than see. ``subject`` identifies this
+    particular clip (a topic, a headline); it picks the progression, where the
+    loop opens and how the shaker sits, so two clips for the same business are
+    plainly different pieces.
+
+    Both are optional: with neither, this returns exactly the bed the defaults
+    always produced.
+    """
+    fingerprint = _fingerprint(subject) if subject.strip() else 0
+    chosen = mood if mood in MOODS else mood_for(subject)
+    return MusicSpec(
+        seconds=seconds,
+        bpm=bpm or MOOD_TEMPO.get(chosen, 96),
+        energy=energy or "calm",
+        seed=7 + _lever(fingerprint, 2, 64),
+        mood=chosen,
+        key_shift=key_shift_for(signature),
+        rotation=_lever(fingerprint, 4, 4),
+    )
 
 #: Sections, in the order a bar can belong to one.
 INTRO, GROOVE, BUILD, LIFT = "intro", "groove", "build", "lift"

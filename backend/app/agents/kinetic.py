@@ -29,6 +29,7 @@ from app.services.kinetic import (
     reading_time,
     render_kinetic,
 )
+from app.services.music import MOOD_TEMPO, energy_for, mood_for
 from app.services.storage import get_storage
 from app.utils.text import truncate_caption
 
@@ -432,8 +433,15 @@ class KineticAgent(BaseAgent):
         if length == "long":
             self._fit_duration(scenes, target=58.0)
 
+        # Tempo is settled here rather than in the renderer: `render_kinetic`
+        # snaps every cut to `spec.bpm`, so the number the clip is timed
+        # against has to be the number the bed plays.
+        mood = mood_for(topic)
         spec = KineticSpec(
             scenes=scenes,
+            subject=topic,
+            bpm=MOOD_TEMPO[mood],
+            energy=energy_for(mood),
             colors=dict(knowledge.brand_colors) if knowledge and knowledge.brand_colors else {},
             brand=business.name,
             phone=(knowledge.phone if knowledge else "") or "",

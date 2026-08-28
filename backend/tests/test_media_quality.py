@@ -82,6 +82,121 @@ class TestClipSoundtrack:
         assert max(abs(value) for value in tail) < 0.05
 
 
+class TestBedVariety:
+    """Every clip the system made played the same four chords in the same key.
+
+    `music.py` had the levers all along — four progressions, a transpose, a
+    rotation, a shaker seed — and `promo.py` used them. The other three render
+    paths (the Reels editor, the clip renderer, the kinetic engine) constructed
+    a bare `MusicSpec`, took the defaults, and produced a bed that was
+    byte-for-byte the same for every business and every topic.
+    """
+
+    SUBJECTS: ClassVar[list[str]] = [
+        "START tarif imkoniyatlari",
+        "Klinikalar uchun kadr yo'riqnomasi",
+        "AI yozgan matnlar nega jonli chiqadi",
+        "Backend dasturlash kursi",
+    ]
+
+    @staticmethod
+    def _digest(spec) -> bytes:
+        bed = render_bed(spec)
+        return bytes(bed.left) + bytes(bed.right)
+
+    def test_two_topics_do_not_share_a_bed(self):
+        from app.services.music import bed_spec
+
+        beds = {
+            subject: self._digest(bed_spec(9.0, signature="Postchi", subject=subject))
+            for subject in self.SUBJECTS
+        }
+        assert len(set(beds.values())) == len(self.SUBJECTS)
+
+    def test_the_same_topic_always_sounds_the_same(self):
+        """Otherwise a re-render is a different video, and reviews mean nothing."""
+        from app.services.music import bed_spec
+
+        once = bed_spec(9.0, signature="Postchi", subject="START tarif")
+        twice = bed_spec(9.0, signature="Postchi", subject="START tarif")
+        assert (once.mood, once.key_shift, once.rotation, once.seed, once.bpm) == (
+            twice.mood, twice.key_shift, twice.rotation, twice.seed, twice.bpm
+        )
+
+    def test_a_business_keeps_one_key_across_its_clips(self):
+        from app.services.music import bed_spec
+
+        shifts = {bed_spec(4.0, signature="Postchi", subject=s).key_shift for s in self.SUBJECTS}
+        assert len(shifts) == 1
+
+    def test_two_businesses_do_not_share_a_key(self):
+        """The two on this deployment collided under the old `sum(ord)` hash."""
+        from app.services.music import key_shift_for
+
+        assert key_shift_for("Postchi") != key_shift_for("Shanghai School")
+
+    def test_the_key_stays_in_a_range_a_phone_can_play(self):
+        from app.services.music import key_shift_for
+
+        names = ["Postchi", "Shanghai School", "Bright Academy", "IT Park", "", "  "]
+        assert all(-3 <= key_shift_for(n) <= 3 for n in names)
+
+    def test_the_levers_are_independent(self):
+        """Taken from one remainder, two subjects that agreed mod 64 came out
+        with the same progression, opening bar *and* shaker at once."""
+        from app.services.music import bed_spec
+
+        specs = [bed_spec(4.0, subject=f"mavzu raqami {i}") for i in range(60)]
+        assert len({s.mood for s in specs}) > 1
+        assert len({s.rotation for s in specs}) > 1
+        assert len({s.seed for s in specs}) > 4
+
+    def test_a_fingerprint_does_not_move_between_processes(self):
+        """`hash()` is salted per run; the worker and the API must agree."""
+        from app.services.music import _fingerprint
+
+        assert _fingerprint("Postchi") == 2679697049859725476
+
+    def test_no_subject_still_gives_the_bed_the_defaults_always_gave(self):
+        from app.services.music import MusicSpec, bed_spec
+
+        derived = bed_spec(3.0)
+        assert (derived.mood, derived.key_shift, derived.rotation, derived.seed) == (
+            "calm", 0, 0, 7,
+        )
+        assert self._digest(derived) == self._digest(MusicSpec(seconds=3.0, bpm=derived.bpm))
+
+    def test_the_clip_renderer_varies_its_bed(self, tmp_path):
+        first = video.write_music_bed(
+            tmp_path / "a.wav", 4.0, signature="Postchi", subject="START tarif"
+        )
+        second = video.write_music_bed(
+            tmp_path / "b.wav", 4.0, signature="Postchi", subject="Klinikalar uchun kadr"
+        )
+        assert first and second
+        assert first.read_bytes() != second.read_bytes()
+
+    def test_the_reels_editor_varies_its_bed(self, tmp_path):
+        from app.services.video_editor import _write_music
+
+        _write_music(tmp_path / "a.wav", 4.0, signature="Postchi", subject="START tarif")
+        _write_music(tmp_path / "b.wav", 4.0, signature="Postchi", subject="Klinikalar uchun kadr")
+        assert (tmp_path / "a.wav").read_bytes() != (tmp_path / "b.wav").read_bytes()
+
+    def test_the_kinetic_engine_is_timed_against_the_tempo_it_plays(self):
+        """Cuts snap to `spec.bpm`; if the bed picked its own the edit drifts."""
+        from app.services.music import MOOD_TEMPO, bed_spec, energy_for, mood_for
+
+        for subject in self.SUBJECTS:
+            mood = mood_for(subject)
+            spec = bed_spec(
+                9.0, signature="Postchi", subject=subject,
+                bpm=MOOD_TEMPO[mood], energy=energy_for(mood),
+            )
+            assert spec.bpm == MOOD_TEMPO[mood]
+            assert spec.mood == mood
+
+
 class TestClipCommand:
     """The ffmpeg command is the product here, so assert on the command."""
 

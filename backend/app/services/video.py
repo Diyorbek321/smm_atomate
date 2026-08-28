@@ -22,7 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 from app.core.exceptions import ConfigurationError, PublishError
 from app.core.logging import get_logger
 from app.services.encoding import audio_args, video_args
-from app.services.music import MusicSpec, render_bed, write_wav
+from app.services.music import bed_spec, render_bed, write_wav
 from app.services.storage import StoredFile, get_storage
 
 log = get_logger(__name__)
@@ -163,15 +163,28 @@ def build_overlay(brief: ClipBrief, colors: dict[str, str], logo: bytes | None =
     return buffer.getvalue()
 
 
-def write_music_bed(path: Path, duration: float, *, energy: str = "calm") -> Path | None:
+def write_music_bed(
+    path: Path,
+    duration: float,
+    *,
+    energy: str = "calm",
+    signature: str = "",
+    subject: str = "",
+) -> Path | None:
     """Synthesise the bed for a clip; None when synthesis fails.
 
     A promo that plays silent reads as unfinished — on Telegram and Instagram
     the viewer sees a mute icon and scrolls. The bed costs nothing and never
     blocks the render: a failure just leaves the clip as it was.
+
+    ``signature`` (the business) and ``subject`` (this clip) pick the key and
+    the progression. Passing neither used to be the only option, which is why
+    every clip this path produced played the same four chords.
     """
     try:
-        bed = render_bed(MusicSpec(seconds=duration, energy=energy))
+        bed = render_bed(
+            bed_spec(duration, signature=signature, subject=subject, energy=energy)
+        )
         return write_wav(bed, path)
     except Exception as exc:  # synthesis is pure Python; never fail a render for it
         log.warning("clip_music_failed", error=str(exc)[:200])
@@ -179,7 +192,13 @@ def write_music_bed(path: Path, duration: float, *, energy: str = "calm") -> Pat
 
 
 async def render_clip(
-    background: Path, overlay_png: bytes, *, duration: int = DEFAULT_DURATION_SEC, music: bool = True
+    background: Path,
+    overlay_png: bytes,
+    *,
+    duration: int = DEFAULT_DURATION_SEC,
+    music: bool = True,
+    signature: str = "",
+    subject: str = "",
 ) -> bytes:
     """Ken Burns zoom over the background with the overlay fading in."""
     binary = ffmpeg_path()
@@ -202,7 +221,11 @@ async def render_clip(
         overlay_path = Path(tmp) / "overlay.png"
         overlay_path.write_bytes(overlay_png)
         out_path = Path(tmp) / "clip.mp4"
-        bed = write_music_bed(Path(tmp) / "bed.wav", duration) if music else None
+        bed = (
+            write_music_bed(Path(tmp) / "bed.wav", duration, signature=signature, subject=subject)
+            if music
+            else None
+        )
         command = [
             binary, "-y",
             "-loop", "1", "-i", str(background),
@@ -256,7 +279,9 @@ async def probe_clip(path: Path) -> tuple[float, bool]:
     return duration, bool(_AUDIO_RE.search(text))
 
 
-async def overlay_on_video(video: Path, overlay_png: bytes) -> bytes:
+async def overlay_on_video(
+    video: Path, overlay_png: bytes, *, signature: str = "", subject: str = ""
+) -> bytes:
     """Composite the brand overlay onto an existing clip (e.g. AI-animated)."""
     binary = ffmpeg_path()
     if binary is None:
@@ -276,7 +301,7 @@ async def overlay_on_video(video: Path, overlay_png: bytes) -> bytes:
         overlay_path.write_bytes(overlay_png)
         out_path = Path(tmp) / "clip.mp4"
         bed = (
-            write_music_bed(Path(tmp) / "bed.wav", duration)
+            write_music_bed(Path(tmp) / "bed.wav", duration, signature=signature, subject=subject)
             if not has_audio and duration > 0
             else None
         )
@@ -318,7 +343,12 @@ async def render_clip_to_storage(
     *,
     prefix: str = "clip",
     duration: int = DEFAULT_DURATION_SEC,
+    signature: str = "",
 ) -> StoredFile:
     overlay = build_overlay(brief, colors, logo)
-    data = await render_clip(background, overlay, duration=duration)
+    # The headline is what makes this clip this clip, so it is what the bed is
+    # varied by; the business name is what makes it theirs, so it sets the key.
+    data = await render_clip(
+        background, overlay, duration=duration, signature=signature, subject=brief.title
+    )
     return get_storage().save_bytes(data, prefix=prefix, content_type="video/mp4")

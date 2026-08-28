@@ -18,6 +18,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.music import key_shift_for
+
 #: Default tempo for anything without its own profile.
 BPM = 120
 BEAT = 60.0 / BPM
@@ -65,7 +67,9 @@ class Brand:
     cta: str = ""
     #: Semitones to transpose the bed. Derived from the mark, so every clip a
     #: business ships sits in the same key — a signature you hear rather than
-    #: see, and one no two neighbouring businesses share.
+    #: see, and one no two neighbouring businesses share. The derivation lives
+    #: in :func:`app.services.music.key_shift_for`, shared with the render
+    #: paths that have no family to look a profile up in.
     key_shift: int = 0
 
     @classmethod
@@ -77,9 +81,8 @@ class Brand:
                 {"ink": "text"}.get(key, key))
             if isinstance(value, str) and value.startswith("#"):
                 palette[key] = value
-        shift = (sum(ord(c) for c in mark) % 7) - 3 if mark else 0
         return cls(palette=palette, mark=mark, props=list(props or []), cta=cta,
-                   key_shift=shift)
+                   key_shift=key_shift_for(mark))
 
     def prop(self, index: int) -> str | None:
         return self.props[index % len(self.props)] if self.props else None

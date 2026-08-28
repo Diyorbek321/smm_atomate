@@ -962,6 +962,9 @@ async def edit_video(
     logo: bytes | None = None,
     business_name: str = "",
     contact: str = "",
+    #: What this clip is about. Only the music bed reads it — it is what makes
+    #: two edits for the same business sound like two pieces.
+    topic: str = "",
     settings_: EditSettings | None = None,
     language: str = "uz",
     keep: list[tuple[float, float]] | None = None,
@@ -1053,7 +1056,12 @@ async def edit_video(
         if options.music:
             try:
                 music_path = work / "bed.wav"
-                _write_music(music_path, await _current_duration(current))
+                _write_music(
+                    music_path,
+                    await _current_duration(current),
+                    signature=business_name,
+                    subject=topic,
+                )
                 mixed = work / "mixed.mp4"
                 await add_music(current, mixed, music_path, speech=info.has_audio)
                 current = mixed
@@ -1101,18 +1109,24 @@ async def _current_duration(path: Path) -> float:
     return (await probe(path)).duration
 
 
-def _write_music(path: Path, seconds: float) -> None:
+def _write_music(path: Path, seconds: float, *, signature: str = "", subject: str = "") -> None:
     """Procedural bed from app/services/music.py — no licensing, no download.
 
     `render_bed` hands back floats in roughly [-1, 1]; a wav file wants signed
     16-bit, so the samples are scaled on the way out.
+
+    ``signature`` and ``subject`` are what stop every edited Reel sounding the
+    same: without them this asked for the module defaults, and the module
+    defaults are one progression in one key.
     """
     import struct
     import wave
 
-    from app.services.music import SAMPLE_RATE, MusicSpec, render_bed
+    from app.services.music import SAMPLE_RATE, bed_spec, render_bed
 
-    samples = render_bed(MusicSpec(seconds=max(4.0, seconds + 1.0), energy="calm"))
+    samples = render_bed(
+        bed_spec(max(4.0, seconds + 1.0), signature=signature, subject=subject, energy="calm")
+    )
     frames = bytearray()
     for value in samples:
         frames += struct.pack("<h", int(max(-1.0, min(1.0, value)) * 32000))

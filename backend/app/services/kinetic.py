@@ -30,7 +30,7 @@ from app.core.logging import get_logger
 from app.services.encoding import audio_args, loudnorm_filter, video_args
 from app.services.music import (
     Bed,
-    MusicSpec,
+    bed_spec,
     channels_of,
     pan_gain,
     render_bed,
@@ -185,6 +185,11 @@ class KineticSpec:
     music: Path | None = None
     bpm: int = 96
     energy: str = "calm"
+    #: What the clip is about. Only the bed reads it — it chooses the
+    #: progression, the opening bar and the shaker, so two clips for the same
+    #: business are different pieces rather than the same one twice. The
+    #: tempo is `bpm`, set alongside it, because cuts snap to that number.
+    subject: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -1520,7 +1525,8 @@ async def render_kinetic(
 
         # An external track replaces the synthesised bed; otherwise we play our own.
         bed = None if spec.music and spec.music.exists() else render_bed(
-            MusicSpec(seconds=clock, bpm=spec.bpm, energy=spec.energy)
+            bed_spec(clock, signature=spec.brand, subject=spec.subject,
+                     bpm=spec.bpm, energy=spec.energy)
         )
         track = mix_soundtrack(cues, clock, tmp_path / "track.wav", bed=bed)
         command = [
