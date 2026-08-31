@@ -1,0 +1,46 @@
+{
+  "desc": "Bosqichlar: harf nishonli kartochkalar. Jarayon tushuntirish uchun.",
+  "needs": [
+    "title",
+    "items[]"
+  ],
+  "grid": {
+    "bg": "#EDEDEE",
+    "color": "rgba(23,25,28,.10)",
+    "size": 120
+  },
+  "align": "left",
+  "valign": "center",
+  "transition": "cut",
+  "pad": 90,
+  "lines": [
+    {
+      "kind": "display",
+      "text": "{{s.title}}",
+      "size": 84,
+      "color": "#17191C",
+      "at": 0.04,
+      "dur": 0.4,
+      "out": 99
+    },
+    {
+      "kind": "option",
+      "repeat": "{{s.items}}",
+      "stagger": 0.18,
+      "letter": "{{item.n}}",
+      "text": "{{item}}",
+      "state": "neutral",
+      "size": 42,
+      "letterSize": 34,
+      "badge": 60,
+      "color": "accent",
+      "gap": 26,
+      "at": 0.3,
+      "dur": 0.36,
+      "out": 99,
+      "textColor": "#17191C",
+      "letterColor": "#17191C",
+      "mutedColor": "#9B9EA4"
+    }
+  ]
+}

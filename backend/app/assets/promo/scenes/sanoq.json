@@ -1,0 +1,13 @@
+{
+  "desc": "Katta sanaydigan raqam + izoh. Bitta kuchli dalil uchun.",
+  "needs": ["to", "caption", "prefix?", "suffix?"],
+  "grid": { "bg": "bg", "color": "rgba(255,255,255,.075)", "size": 120 },
+  "align": "center", "valign": "center", "transition": "cut",
+  "lines": [
+    { "kind": "number", "to": "{{s.to}}", "from": 0, "prefix": "{{s.prefix|}}",
+      "suffix": "{{s.suffix|}}", "size": 360, "color": "accent", "glow": 60,
+      "at": 0.04, "dur": 1.3, "out": 99 },
+    { "kind": "body", "text": "{{s.caption}}", "size": 46, "color": "ink",
+      "gap": 24, "wrap": 780, "at": 0.42, "dur": 0.4, "out": 99 }
+  ]
+}

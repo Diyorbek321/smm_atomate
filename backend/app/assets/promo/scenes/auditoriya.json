@@ -1,0 +1,11 @@
+{
+  "desc": "Auditoriyani chaqirish: ikki-uch segment nomi. Tomoshabin o'zini tanisin.",
+  "needs": ["items[]"],
+  "grid": { "bg": "#EDEDEE", "color": "rgba(23,25,28,.10)", "size": 120 },
+  "align": "center", "valign": "center", "transition": "cut",
+  "lines": [
+    { "kind": "display", "repeat": "{{s.items}}", "stagger": 0.22,
+      "text": "{{item}}", "size": 112, "color": "#17191C",
+      "gap": 40, "at": 0.06, "dur": 0.4, "out": 99 }
+  ]
+}

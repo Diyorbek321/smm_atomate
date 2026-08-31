@@ -1,0 +1,9 @@
+{
+  "desc": "Sof gap: panjara fonida shisha karaoke. Hikoya va tushuntirish uchun.",
+  "needs": [],
+  "grid": { "bg": "bg", "color": "rgba(255,255,255,.075)", "size": 120 },
+  "align": "center", "valign": "center", "transition": "cut",
+  "lines": [
+    { "kind": "karaoke", "size": 54, "wrap": 880, "at": 0.04, "dur": 0.4, "out": 99 }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "desc": "Kenglikka tekislangan sarlavha ustuni. Oxirgi qator kulrang — hali aytilmagan.",
+  "needs": ["lines[]"],
+  "grid": { "bg": "#FFFFFF", "color": "rgba(23,25,28,.055)", "size": 120 },
+  "align": "left", "valign": "center", "transition": "cut",
+  "lines": [
+    { "kind": "stack", "color": "#17191C", "size": 150, "lines": "{{s.lines}}",
+      "at": 0.04, "dur": 0.44, "out": 99 }
+  ]
+}

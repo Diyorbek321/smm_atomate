@@ -1,0 +1,13 @@
+{
+  "desc": "Jadval: chapda nom, o'ngda qiymat. Narx, muddat, tarif uchun.",
+  "needs": ["title", "rows[]"],
+  "grid": { "bg": "bg", "color": "rgba(255,255,255,.075)", "size": 120 },
+  "align": "left", "valign": "center", "transition": "cut", "pad": 100,
+  "lines": [
+    { "kind": "kicker", "text": "{{s.title}}", "size": 30, "color": "accent",
+      "at": 0.05, "dur": 0.36, "out": 99 },
+    { "kind": "table", "rows": "{{s.rows}}", "gap": 48,
+      "leftSize": 46, "rightSize": 58, "rightColor": "accent", "rowGap": 22,
+      "at": 0.22, "dur": 0.44, "out": 99 }
+  ]
+}

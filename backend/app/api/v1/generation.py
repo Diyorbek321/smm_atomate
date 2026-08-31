@@ -237,6 +237,51 @@ async def generate_promo_carousel(
                               "Karusel navbatga qo'yildi")
 
 
+@router.post("/brief", response_model=APIResponse[dict])
+async def generate_brief(
+    payload: dict, session: SessionDep, _: AuthDep
+) -> APIResponse[dict]:
+    """Render a clip whose structure is composed from scene archetypes.
+
+    The families behind `/promo` are ten authored videos; this path sequences
+    eleven authored *scenes*, so the shape of the clip follows the subject
+    instead of the pillar. `scenes` sets the length (3-12, default 8) and
+    `mood` overrides what the model picks for the bed.
+    """
+    from app.core.exceptions import ValidationError
+    from app.services.promo_scenes import MOODS
+
+    raw_business = str(payload.get("business_id", "")).strip()
+    topic = str(payload.get("topic", "")).strip()
+    if not raw_business or not topic:
+        raise ValidationError("`business_id` va `topic` majburiy")
+
+    scenes = int(payload.get("scenes", 8))
+    if not 3 <= scenes <= 12:
+        raise ValidationError("`scenes` 3 va 12 orasida bo'lishi kerak")
+    mood = str(payload.get("mood", "")).strip() or None
+    if mood and mood not in MOODS:
+        raise ValidationError(
+            f"Noma'lum kayfiyat «{mood}». Mavjud: {', '.join(sorted(MOODS))}"
+        )
+
+    business_id = uuid.UUID(raw_business)
+    business = await BusinessRepository(session).get_full_or_404(business_id)
+    if not business.capabilities.video:
+        raise ValidationError(
+            f"Promo klip «{business.plan}» tarifiga kirmaydi — Pro tarifi kerak"
+        )
+
+    task_id = _enqueue("app.tasks.generation.render_brief_clip", str(business_id),
+                       topic=topic, scenes=scenes, mood=mood)
+    if not task_id:
+        raise ValidationError("Navbat mavjud emas — keyinroq urinib ko'ring")
+    return APIResponse.ok({
+        "task_id": task_id, "status": "queued", "scenes": scenes,
+        "message": "Klip navbatga qo'yildi — /generate/task/{id} orqali kuzating",
+    })
+
+
 async def _queue_promo(
     payload: dict, session: SessionDep, task: str, queued_message: str
 ) -> APIResponse[dict]:

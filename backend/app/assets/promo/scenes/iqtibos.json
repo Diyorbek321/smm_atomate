@@ -1,0 +1,49 @@
+{
+  "desc": "Iqtibos: kursiv serif matn + muallif. Temp sekinlashadi, nafas beradi.",
+  "needs": [
+    "quote",
+    "author?"
+  ],
+  "grid": {
+    "bg": "#EDEDEE",
+    "color": "rgba(23,25,28,.08)",
+    "size": 120
+  },
+  "align": "left",
+  "valign": "center",
+  "transition": "cut",
+  "pad": 100,
+  "lines": [
+    {
+      "kind": "serif",
+      "text": "{{s.quote}}",
+      "size": 76,
+      "color": "#17191C",
+      "wrap": 820,
+      "lineHeight": 1.14,
+      "at": 0.05,
+      "dur": 0.5,
+      "out": 99
+    },
+    {
+      "kind": "rule",
+      "width": 180,
+      "height": 4,
+      "color": "accent",
+      "gap": 40,
+      "at": 0.42,
+      "dur": 0.5,
+      "out": 99
+    },
+    {
+      "kind": "kicker",
+      "text": "{{s.author|}}",
+      "size": 28,
+      "color": "#6E7176",
+      "gap": 26,
+      "at": 0.52,
+      "dur": 0.36,
+      "out": 99
+    }
+  ]
+}

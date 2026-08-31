@@ -697,3 +697,60 @@ def render_promo_carousel(
     except Exception as exc:
         log.warning("promo_carousel_failed", business=business_id, error=str(exc)[:300])
         raise self.retry(exc=exc) from exc
+
+
+@shared_task(name="app.tasks.generation.render_brief_clip", bind=True, max_retries=1, default_retry_delay=180)
+def render_brief_clip(
+    self: Any,
+    business_id: str,
+    topic: str,
+    *,
+    scenes: int = 8,
+    mood: str | None = None,
+    notify: bool = True,
+) -> dict[str, Any]:
+    """Render a clip whose structure is composed, not chosen from ten layouts.
+
+    Same renderer as :func:`render_promo_clip` — the difference is upstream: the
+    agent sequences scene archetypes instead of filling one authored family, so
+    two clips on different subjects come out shaped differently.
+    """
+    from app.agents.promo_brief import PromoBriefAgent
+    from app.services.brand_assets import prop_library
+    from app.services.promo import render_promo
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            from app.repositories.business import BusinessRepository, KnowledgeBaseRepository
+
+            business = await BusinessRepository(session).get(uuid.UUID(business_id))
+            if business is None:
+                raise ValueError(f"business {business_id} not found")
+            knowledge = await KnowledgeBaseRepository(session).for_business(business.id)
+            props = [str(path) for path in prop_library(business.id, topic)]
+            written = await PromoBriefAgent(session=session).write(
+                business, knowledge, topic, scenes=scenes, mood=mood, props=props,
+            )
+
+        result = await render_promo(written.script, prefix="promo-arxetip")
+        if notify:
+            async with session_scope() as session:
+                from app.bot.notifier import push_clip
+
+                await push_clip(session, uuid.UUID(business_id), str(result.video.path),
+                                caption=f"🎬 {topic}")
+        return {
+            "business_id": business_id,
+            "scenes": written.used,
+            "dropped": written.dropped,
+            "seconds": result.seconds,
+            "video": result.video.filename,
+            "cover": result.cover.filename if result.cover else None,
+            "issues": result.issues,
+        }
+
+    try:
+        return run_async(_run())
+    except Exception as exc:
+        log.warning("brief_clip_failed", business=business_id, error=str(exc)[:300])
+        raise self.retry(exc=exc) from exc

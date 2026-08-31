@@ -37,6 +37,9 @@ html,body{overflow:hidden;background:#000}
   font-style:normal;border-style:solid}
 .photo{display:block;object-fit:cover}
 .clip{display:block;object-fit:cover}
+.footage{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+  will-change:transform;transform-origin:50% 50%}
+.scrim{position:absolute;inset:0;pointer-events:none}
 .table{display:flex;flex-direction:column;width:100%;will-change:transform,opacity,filter}
 .trow{display:flex;align-items:baseline;justify-content:space-between;width:100%}
 .tl{font-family:'Inter',sans-serif;font-weight:600}
@@ -46,6 +49,37 @@ html,body{overflow:hidden;background:#000}
 .optL{display:flex;align-items:center;justify-content:center;flex:none;
   font-family:'Anton',sans-serif;border-radius:50%}
 .optT{font-family:'Inter',sans-serif;font-weight:500;text-align:left;white-space:normal}
+.gridbg{position:absolute;inset:0;pointer-events:none}
+/* asror uslubi: bir so'zli subtitr — kapsulasiz, katta, bosh harf */
+.kword{font-family:'Inter',sans-serif;font-weight:800;text-align:center;
+  text-transform:uppercase;white-space:nowrap;letter-spacing:-.005em;
+  will-change:transform,opacity}
+/* yorliq kapsulasi — oq fon, qora qalin matn, uzoq turadi */
+.labelpill{font-family:'Inter',sans-serif;font-weight:800;line-height:1.24;
+  text-align:center;white-space:normal;display:inline-block}
+/* telefon maketi — ekran yozuvi uchun */
+.phone{position:relative;overflow:hidden;background:#000;flex:none}
+.phone .scr{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.phone i.isl{position:absolute;left:50%;transform:translateX(-50%);
+  background:#0d0d0f;border-radius:999px;z-index:2}
+.glass{display:block;position:relative;overflow:hidden;
+  -webkit-backdrop-filter:blur(14px) saturate(1.6);backdrop-filter:blur(14px) saturate(1.6)}
+.glass::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1px;
+  background:conic-gradient(from 210deg,#ff2d55,#ffcc00,#34c759,#0a84ff,#bf5af2,#ff2d55);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  mask-composite:exclude;opacity:.5;pointer-events:none}
+.kara{font-family:'Inter',sans-serif;font-weight:600;white-space:normal}
+.kara b{font-weight:900;font-style:italic}
+.cap{position:relative;overflow:hidden;border-radius:999px}
+.cap i{position:absolute;left:0;top:0;height:100%;border-radius:999px;display:block}
+.capL{font-family:'Inter',sans-serif;font-weight:900;font-style:italic;width:100%}
+.capN{font-family:'Inter',sans-serif;font-weight:900;font-style:italic;line-height:1;width:100%}
+.stack{display:flex;flex-direction:column;width:100%;align-items:flex-start}
+/* inline-block SHART: blok element ota kengligini oladi, shunda scrollWidth
+   matn kengligi emas, maydon kengligi bo'lib chiqadi va tekislash ishlamaydi. */
+.stack div{font-family:'Anton',sans-serif;line-height:.94;white-space:nowrap;
+  letter-spacing:-.04em;display:inline-block}
 #mark{position:absolute;display:flex;align-items:center;will-change:opacity,transform}
 #mark i{display:block;border-radius:5px}
 #mark span{font-family:'Inter',sans-serif;font-weight:600;text-transform:uppercase}
@@ -99,6 +133,33 @@ window.build = function(script){
   S.scenes.forEach(sc=>{
     const holder=el('div','holder',{left:'0',top:'0',width:W+'px',height:H+'px'});
     const panes=[];
+    // To'liq ekran manba kadri — panellardan orqada, sahna o'tishida qatnashadi.
+    let footage=null;
+    if(sc.footage){
+      const f=sc.footage;
+      const v=el('video','footage');
+      v.src=f.src; v.muted=true; v.playsInline=true; v.preload='auto';
+      v.setAttribute('muted',''); v.setAttribute('playsinline','');
+      if(f.fit) v.style.objectFit=f.fit;
+      if(f.filter) v.style.filter=f.filter;
+      holder.appendChild(v);
+      EL.videos.push({node:v, spec:f, sceneStart:null});
+      footage={node:v, spec:f};
+      if(f.scrim!==false){
+        holder.appendChild(el('div','scrim',{background: f.scrim ||
+          'linear-gradient(180deg,rgba(0,0,0,.62) 0%,rgba(0,0,0,.10) 34%,'
+          +'rgba(0,0,0,.16) 60%,rgba(0,0,0,.80) 100%)'}));
+      }
+    }
+    if(sc.grid){
+      const g = sc.grid===true?{}:sc.grid;
+      const c = g.color || 'rgba(255,255,255,.075)', sz = u(g.size||120);
+      const gcss = {backgroundImage:
+        `linear-gradient(${c} 1px,transparent 1px),linear-gradient(90deg,${c} 1px,transparent 1px)`,
+        backgroundSize:`${sz} ${sz}`};
+      if(g.bg) gcss.backgroundColor=colour(g.bg);
+      holder.appendChild(el('div','gridbg',gcss));
+    }
     if(sc.layout==='split'){
       const vertical = sc.axis==='vertical';
       const cut = sc.splitAt!=null ? sc.splitAt : 0.5;
@@ -122,7 +183,7 @@ window.build = function(script){
       holder.insertBefore(ghost, holder.firstChild);
     }
     stage.appendChild(holder);
-    EL.scenes.push({holder,panes,ghost,spec:sc});
+    EL.scenes.push({holder,panes,ghost,footage,spec:sc});
   });
 
   if(S.mark){
@@ -156,7 +217,7 @@ window.fit = function(){ fitLines(); setTime(0); };
 // display'da 1246px joy egallaydi. Modelga har maydon uchun alohida belgi
 // chegarasini o'rgatishdan ko'ra, tartibning o'zi moslashgani ishonchliroq.
 function fitLines(){
-  const SKIP = ['rule','photo','video','option','table'];
+  const SKIP = ['rule','photo','video','option','table','stack','capsule','karaoke','label','phone'];
   EL.scenes.forEach(s=>{
     const was = s.holder.style.display;
     s.holder.style.display = 'block';
@@ -177,6 +238,30 @@ function fitLines(){
           if(size <= 12) break;
           o.node.style.fontSize = (size * 0.94).toFixed(2) + 'px';
         }
+      });
+      // Stack: har qator maydon kengligiga ANIQ tenglashadi — kichrayadi ham,
+      // kattalashadi ham. Oddiy sig'dirish faqat kichraytiradi, bu yetmaydi:
+      // ustunning butun ta'siri qatorlar chetlari bir chiziqda turishida.
+      p.nodes.forEach(o=>{
+        if(o.kind!=='stack') return;
+        const base=(o.spec.size||140)*K;
+        const lo=o.spec.min!=null?o.spec.min*K:base*0.55;
+        const hi=o.spec.max!=null?o.spec.max*K:base*2.0;
+        o.rows.forEach(d=>{
+          let size=parseFloat(getComputedStyle(d).fontSize), guard=0;
+          while(guard++ < 60){
+            const w=d.scrollWidth;
+            if(w<=0) break;
+            const r=avail/w;
+            if(Math.abs(r-1) < 0.004) break;
+            // Chegara bazaviy keglga nisbatan: 2 harfli so'zni 900px ga cho'zish
+            // uchun kegl shunchalik kattaki, ustun ekranga sig'may qoladi.
+            // Shuning uchun tekislash diapazon ichida — mos uzunlikdagi so'zlar
+            // tanlansa to'liq tekislanadi, aks holda yaqinlashadi.
+            size=Math.max(lo, Math.min(size * (r>1?Math.min(r,1.5):Math.max(r,.72)), hi));
+            d.style.fontSize=size.toFixed(2)+'px';
+          }
+        });
       });
     });
     s.holder.style.display = was;
@@ -201,6 +286,111 @@ function makePane(holder, src, sc, geo){
 
 function makeLine(ln, box, align){
   const kind = ln.kind || 'display';
+  if(kind==='karaoke'){
+    // So'zma-so'z yonadigan subtitr. Aytilgan so'z to'liq, kelasi so'z xira.
+    const wrap=el('span','ln',{marginTop:u(ln.gap||0),maxWidth:u(ln.wrap||880)});
+    const inner=el('div', (ln.glass===false||ln.mode==='word')?null:'glass',
+      {padding:`${u(ln.padY||26)} ${u(ln.padX||40)}`, borderRadius:u(ln.radius||34)});
+    if(ln.glass!==false && ln.mode!=='word'){
+      inner.style.background = ln.tint || 'rgba(255,255,255,.11)';
+      inner.style.border = `${u(1.5)} solid ${ln.stroke||'rgba(255,255,255,.30)'}`;
+      inner.style.boxShadow = `inset 0 ${u(1)} 0 rgba(255,255,255,.5), 0 ${u(10)} ${u(30)} rgba(0,0,0,.45)`;
+    }
+    const wordMode = ln.mode === 'word';
+    const txt=el('div', wordMode?'kword':'kara',
+      {fontSize:u(ln.size||(wordMode?96:46)),lineHeight:ln.lineHeight||(wordMode?1.05:1.3),
+       color:colour(ln.color||'ink'),textAlign:ln.textAlign||'center'});
+    if(ln.shadow!==false) txt.style.textShadow=`0 ${u(3)} ${u(14)} rgba(0,0,0,.62)`;
+    const spans=(ln.words||[]).map((w,i)=>{
+      const isB = (typeof w==='object') && w.b;
+      const sp=el(isB && !wordMode ? 'b' : 'span');
+      // Bir so'zli rejimda bir vaqtda bitta so'z ko'rinadi — oradagi bo'sh
+      // joy kerak emas, aks holda markazlash siljib ketadi.
+      sp.textContent=(i && !wordMode ? ' ' : '')+(typeof w==='object'?w.w:w);
+      if(wordMode){ sp.style.display='none'; sp.style.willChange='transform'; }
+      txt.appendChild(sp); return sp;
+    });
+    inner.appendChild(txt); wrap.appendChild(inner); box.appendChild(wrap);
+    return {node:wrap,spec:ln,kind,spans,wordMode};
+  }
+  if(kind==='label'){
+    // Doimiy yorliq: oq kapsula, qora qalin matn. Karaoke emas — sahna
+    // davomida turadi va tomoshabinga "nima ko'rayapsan" deb aytadi.
+    const wrap=el('span','ln',{marginTop:u(ln.gap||0)});
+    const pl=el('div','labelpill',{
+      padding:`${u(ln.padY||16)} ${u(ln.padX||26)}`,
+      borderRadius:u(ln.radius||10),
+      background: ln.bg || '#FFFFFF',
+      color: ln.color ? colour(ln.color) : '#0B0B0C',
+      fontSize:u(ln.size||34),
+      maxWidth:u(ln.wrap||640)});
+    if(ln.upper) pl.style.textTransform='uppercase';
+    pl.textContent=ln.text||'';
+    wrap.appendChild(pl); box.appendChild(wrap);
+    return {node:wrap,spec:ln,kind};
+  }
+  if(kind==='phone'){
+    // Telefon maketi — ekran yozuvi dalil sifatida. Manba video ham,
+    // rasm ham bo'lishi mumkin.
+    const wrap=el('span','ln',{marginTop:u(ln.gap||0)});
+    const pw=ln.w||430, ph=ln.h||Math.round(pw*2.16);
+    const fr=el('div','phone',{width:u(pw),height:u(ph),
+      borderRadius:u(ln.radius!=null?ln.radius:pw*0.135),
+      border:`${u(ln.bezel||9)} solid ${ln.bezelColor||'#0d0d0f'}`,
+      boxShadow:`0 ${u(26)} ${u(58)} rgba(0,0,0,.55)`});
+    let vnode=null;
+    if(ln.src && /\.(mp4|webm|mov|m4v)$/i.test(ln.src)){
+      const v=el('video','scr'); v.src=ln.src; v.muted=true; v.playsInline=true;
+      v.preload='auto'; v.setAttribute('muted',''); v.setAttribute('playsinline','');
+      fr.appendChild(v); EL.videos.push({node:v, spec:ln, sceneStart:null}); vnode=v;
+    } else if(ln.src){
+      const im=el('img','scr'); im.src=ln.src; fr.appendChild(im);
+    }
+    if(ln.island!==false){
+      fr.appendChild(el('i','isl',{top:u(ln.islandY||14),
+        width:u(ln.islandW||pw*0.28), height:u(ln.islandH||pw*0.075)}));
+    }
+    wrap.appendChild(fr); box.appendChild(wrap);
+    return {node:wrap,spec:ln,kind,video:vnode};
+  }
+  if(kind==='capsule'){
+    // 3D shisha kapsula statistika: yorliq + to'ladigan bar + sanaydigan raqam.
+    const wrap=el('span','ln',{marginTop:u(ln.gap||0),width:'100%'});
+    const lab=el('div','capL',{fontSize:u(ln.labelSize||58),color:colour(ln.labelColor||'ink'),
+      marginBottom:u(ln.labelGap||20),textAlign:ln.textAlign||'center'});
+    lab.textContent=ln.label||'';
+    const bar=el('div','cap',{width:'100%',height:u(ln.h||74),
+      background:ln.track||'rgba(255,255,255,.07)',
+      border:`${u(1.5)} solid ${ln.trackStroke||'rgba(255,255,255,.18)'}`,
+      boxShadow:`inset 0 ${u(2)} ${u(2)} rgba(255,255,255,.22), inset 0 ${u(-10)} ${u(20)} rgba(0,0,0,.45)`});
+    const acc=colour(ln.color||'accent');
+    // Gradient accent rangning o'zidan yasaladi — qatlamli soya. Qat'iy qizil
+    // qiymatlar yozilsa preset faqat bitta brendga yaraydi.
+    const fill=el('i',null,{width:'0%',
+      background:`linear-gradient(180deg, rgba(255,255,255,.34) 0%, rgba(255,255,255,0) 42%,`
+                +` rgba(0,0,0,.30) 78%, rgba(0,0,0,.52) 100%), ${acc}`,
+      boxShadow:`inset 0 ${u(2)} ${u(3)} rgba(255,255,255,.5), 0 0 ${u(26)} ${acc}73`});
+    bar.appendChild(fill);
+    const num=el('div','capN',{fontSize:u(ln.numSize||160),color:colour(ln.numColor||'ink'),
+      marginTop:u(ln.numGap||14),textAlign:ln.textAlign||'center'});
+    if(ln.numShadow!==false) num.style.textShadow=`0 ${u(4)} ${u(22)} rgba(0,0,0,.6)`;
+    num.textContent='0'+(ln.suffix||'');
+    wrap.appendChild(lab); wrap.appendChild(bar); wrap.appendChild(num);
+    box.appendChild(wrap);
+    return {node:wrap,spec:ln,kind,fill,num};
+  }
+  if(kind==='stack'){
+    // Kenglikka tekislangan sarlavha ustuni — har qator bir xil kenglikda.
+    const n=el('div','stack',{marginTop:u(ln.gap||0)});
+    const rows=(ln.lines||[]).map(L=>{
+      const d=el('div',null,{fontSize:u(ln.size||140),
+        color:colour((typeof L==='object'&&L.color)||ln.color||'ink')});
+      d.textContent=(typeof L==='object'?L.text:L);
+      n.appendChild(d); return d;
+    });
+    box.appendChild(n);
+    return {node:n,spec:ln,kind,rows};
+  }
   if(kind==='rule'){
     const n=el('div','ln rule',{height:u(ln.height||3),width:u(ln.width||900),marginTop:u(ln.gap||0),
       background:`linear-gradient(90deg, ${colour(ln.color||'accent')}, transparent)`});
@@ -249,19 +439,21 @@ function makeLine(ln, box, align){
     // holatni sahna ichida o'zgartirishdan ko'ra ikki marta chizish soddaroq.
     const st = ln.state || 'neutral';
     const acc = colour(ln.color||'accent'), mut = colour('muted');
+    const optInk = ln.textColor ? colour(ln.textColor) : colour('ink');
+    const optMut = ln.mutedColor ? colour(ln.mutedColor) : mut;
     const n=el('div','option',{marginTop:u(ln.gap||26),width:'100%',
       gap:u(ln.colGap||26), padding:`${u(ln.padY||26)} ${u(ln.padX||30)}`,
       borderRadius:u(ln.radius||22), borderWidth:u(ln.border||3),
-      borderColor: st==='right'?acc : st==='wrong'? mut+'59' : mut,
+      borderColor: st==='right'?acc : st==='wrong'? optMut+'59' : optMut,
       background: st==='right'? acc+'1F' : 'transparent'});
     const L=el('div','optL',{width:u(ln.badge||64),height:u(ln.badge||64),
       fontSize:u(ln.letterSize||38),
       background: st==='right'?acc : 'transparent',
-      color: st==='right'?colour('bg') : st==='wrong'? mut : colour('ink'),
-      border: st==='right'?'none':`${u(2)} solid ${st==='wrong'?mut+'59':mut}`});
+      color: st==='right'?colour('bg') : st==='wrong'? optMut : (ln.letterColor?colour(ln.letterColor):optInk),
+      border: st==='right'?'none':`${u(2)} solid ${st==='wrong'?optMut+'59':optMut}`});
     L.textContent=ln.letter||'';
     const T=el('div','optT',{fontSize:u(ln.size||46),
-      color: st==='wrong'? mut : colour('ink'),
+      color: st==='wrong'? optMut : optInk,
       textDecoration: st==='wrong'?'line-through':'none',
       lineHeight: ln.lineHeight||1.25});
     T.textContent=ln.text||'';
@@ -363,6 +555,37 @@ function animLine(o, t, t0, t1, sceneEntry){
     const from=s.from||0, to=s.to!=null?s.to:100;
     n.textContent=(s.prefix||'')+fmt(Math.round(mix(from,to,p)),s.sep)+(s.suffix||'');
   }
+  if(o.kind==='karaoke'){
+    const ws=s.words||[], dim=s.upcoming!=null?s.upcoming:.34, rel=t-t0;
+    if(o.wordMode){
+      // Bitta so'z ko'rinadi, har almashuvda kichik "urish" — bu naqsh
+      // ko'zni ekranda ushlab turadi va asror uslubining o'zagi.
+      let idx=-1;
+      for(let i=0;i<ws.length;i++){
+        const at=(typeof ws[i]==='object'&&ws[i].at!=null)?ws[i].at:0;
+        if(rel>=at) idx=i;
+      }
+      o.spans.forEach((sp,i)=>{ sp.style.display = (i===idx)?'inline-block':'none'; });
+      if(idx>=0){
+        const at=(typeof ws[idx]==='object'&&ws[idx].at!=null)?ws[idx].at:0;
+        const pop=eOutBack(inv(rel,at,at+(s.pop!=null?s.pop:0.13)));
+        o.spans[idx].style.transform=`scale(${mix(1.14,1,pop).toFixed(4)})`;
+      }
+    } else {
+      o.spans.forEach((sp,i)=>{
+        const w=ws[i], at=(typeof w==='object'&&w.at!=null)?w.at:0;
+        const on = rel >= at;
+        sp.style.opacity = on?1:dim;
+        sp.style.filter  = on?'none':`blur(${(0.9*K).toFixed(2)}px)`;
+      });
+    }
+  }
+  if(o.kind==='capsule'){
+    const bAt=s.barAt!=null?s.barAt:.18, bDur=s.barDur!=null?s.barDur:1.15;
+    const p=eOutExpo(inv(t,t0+bAt,t0+bAt+bDur)), to=s.to!=null?s.to:70;
+    o.fill.style.width=(p*to).toFixed(2)+'%';
+    o.num.textContent=Math.round(p*to)+(s.suffix||'');
+  }
   const {t:tr, clip}=entryTransform(style,a,s);
   const extra = o2>0 ? ` translate3d(0,${(-40*K*o2).toFixed(2)}px,0) scale(${mix(1,.962,o2).toFixed(4)})` : '';
   const blur=mix(bl,0,a)+o2*15;
@@ -429,7 +652,7 @@ window.measure = function(){
       - parseFloat(getComputedStyle(p.pane).paddingLeft)
       - parseFloat(getComputedStyle(p.pane).paddingRight);
     p.nodes.forEach(o=>{
-      if(['rule','photo','option','table','video'].includes(o.kind)) return;
+      if(['rule','photo','option','table','video','stack','capsule','karaoke','label','phone'].includes(o.kind)) return;
       const w=o.node.scrollWidth;
       if(w > avail+1) issues.push({axis:'x', scene:si+1, pane:pi+1,
         text:(o.spec.text||o.spec.word||o.spec.letter||o.kind).slice(0,34),
@@ -508,8 +731,19 @@ window.setTime = function(t){
       s.ghost.style.opacity=(g*(s.spec.ghostOpacity!=null?s.spec.ghostOpacity:0.07)*(1-eInOut(oA))).toFixed(4);
       s.ghost.style.transform=`translate(-50%,-50%) scale(${mix(1.18,1,g).toFixed(4)})`;
     }
+    if(s.footage){
+      const src=s.footage.spec, v=s.footage.node, dur=v.duration||0;
+      let want=(src.start||0)+(t-t0)*(src.rate||1);
+      if(dur && src.loop!==false) want=want % Math.max(0.04,dur-(src.start||0)) + (src.start||0);
+      if(Math.abs(v.currentTime-want) > 0.008) v.currentTime=want;
+      if(src.zoom){
+        const kk=inv(t,t0,t1);
+        v.style.transform=`scale(${mix(1,1+src.zoom,kk).toFixed(4)})`;
+      }
+    }
     s.panes.forEach(p=>p.nodes.forEach(o=>{
-      if(o.kind!=='video') return;
+      if(o.kind!=='video' && o.kind!=='phone') return;
+      if(!o.video) return;                      // phone rasm bilan ham bo'ladi
       const src=o.spec, dur=o.video.duration||0;
       let want=(src.start||0)+(t-t0)*(src.rate||1);
       if(dur && src.loop!==false) want=want % Math.max(0.04,dur - (src.start||0)) + (src.start||0);

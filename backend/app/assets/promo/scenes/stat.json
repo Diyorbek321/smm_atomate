@@ -1,0 +1,12 @@
+{
+  "desc": "Raqamli ilgak: shisha kapsula to'ladi, raqam sanaydi, pastda so'zma-so'z gap.",
+  "needs": ["label", "to", "suffix?"],
+  "grid": { "bg": "bg", "color": "rgba(255,255,255,.075)", "size": 120 },
+  "align": "center", "valign": "center", "transition": "cut",
+  "lines": [
+    { "kind": "capsule", "label": "{{s.label}}", "to": "{{s.to}}", "suffix": "{{s.suffix|%}}",
+      "color": "accent", "h": 74, "labelSize": 58, "numSize": 172,
+      "at": 0.05, "dur": 0.46, "barAt": 0.30, "barDur": 1.05, "out": 99 },
+    { "kind": "karaoke", "size": 44, "gap": 76, "wrap": 880, "at": 0.20, "dur": 0.42, "out": 99 }
+  ]
+}

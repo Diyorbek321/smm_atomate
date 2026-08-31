@@ -267,6 +267,7 @@ All responses share one envelope:
 | `POST` | `/generate/plan`, `/generate/item` | Trigger generation |
 | `POST` | `/generate/item/{id}/regenerate` | Rewrite with an instruction |
 | `POST` | `/generate/item/{id}/publish` | Publish immediately |
+| `POST` | `/generate/promo`, `/generate/brief`, `/generate/kinetic` | Video clips — always queued |
 | `GET` | `/generate/task/{task_id}` | Celery task state |
 | `GET/POST/PATCH/DELETE` | `/prompts` | Prompt Studio (versioned, rollback-able) |
 | `GET` | `/analytics/summary`, `/analytics/business/{id}` | Dashboard metrics |
@@ -277,6 +278,35 @@ Unversioned: `GET /health`, `GET /health/ready`, `POST /telegram/webhook`, `GET 
 ---
 
 ## The agents
+
+### Two ways to shape a clip
+
+Both browser-rendered engines draw through the same authored template; they
+differ in who decides the *structure*.
+
+| | `/generate/promo` — families | `/generate/brief` — archetypes |
+|---|---|---|
+| Unit of authoring | a whole video | one scene |
+| Catalogue | ten families in `promo_families.py` | eleven JSON files in `assets/promo/scenes` |
+| What the model picks | which family, then copy | which scenes, in what order, then copy |
+| Structure varies with | the content pillar | the subject |
+
+The families are fixed videos, which is why every educational clip a business
+ships is the same clip with different words. An archetype authors one scene —
+a stat capsule, a price table, a quote — and `promo_scenes.build_script`
+sequences them, so eleven scenes compose into far more than eleven videos.
+
+Neither path lets a model emit geometry. It names archetypes and writes short
+strings; where the text sits and how long the scene holds stay in the files.
+
+Adding a scene type is one JSON file in `assets/promo/scenes` plus a line in
+`_FIELDS` (`app/agents/promo_brief.py`) saying which schema field fills it —
+the test suite fails if the second half is forgotten.
+
+> The response schema for this path is deliberately lean: Gemini rejects a
+> schema holding an array of objects at this nesting depth with a bare
+> `INVALID_ARGUMENT`, so table rows travel as `"nom: qiymat"` strings and every
+> archetype's copy shares one field per *meaning*. See `SceneCopy`.
 
 ### Pillar distribution — enforced, not suggested
 

@@ -1,0 +1,75 @@
+{
+  "desc": "Ikki bo'lak, ustma-ust: eski usul / yangi usul. 9:16 da yonma-yon ustun torlik qiladi, shuning uchun yuqori-past bo'linadi.",
+  "needs": [
+    "leftTitle",
+    "leftBody",
+    "rightTitle",
+    "rightBody"
+  ],
+  "grid": {
+    "bg": "bg",
+    "color": "rgba(255,255,255,.075)",
+    "size": 120
+  },
+  "layout": "split",
+  "splitAt": 0.5,
+  "transition": "cut",
+  "columns": [
+    {
+      "align": "center",
+      "valign": "center",
+      "pad": 90,
+      "lines": [
+        {
+          "kind": "kicker",
+          "text": "{{s.leftTitle}}",
+          "size": 28,
+          "color": "muted",
+          "at": 0.06,
+          "dur": 0.36,
+          "out": 99
+        },
+        {
+          "kind": "display",
+          "text": "{{s.leftBody}}",
+          "size": 76,
+          "color": "muted",
+          "gap": 26,
+          "wrap": 780,
+          "lineHeight": 1.05,
+          "at": 0.14,
+          "dur": 0.4,
+          "out": 99
+        }
+      ]
+    },
+    {
+      "align": "center",
+      "valign": "center",
+      "pad": 90,
+      "lines": [
+        {
+          "kind": "kicker",
+          "text": "{{s.rightTitle}}",
+          "size": 28,
+          "color": "accent",
+          "at": 0.3,
+          "dur": 0.36,
+          "out": 99
+        },
+        {
+          "kind": "display",
+          "text": "{{s.rightBody}}",
+          "size": 76,
+          "color": "ink",
+          "gap": 26,
+          "wrap": 780,
+          "lineHeight": 1.05,
+          "at": 0.38,
+          "dur": 0.4,
+          "out": 99
+        }
+      ]
+    }
+  ]
+}

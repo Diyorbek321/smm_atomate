@@ -1,0 +1,14 @@
+{
+  "desc": "Sanoqli ro'yxat: sarlavha + bandlar ketma-ket chiqadi. Bandlar soni erkin.",
+  "needs": ["title", "items[]"],
+  "grid": { "bg": "bg", "color": "rgba(255,255,255,.075)", "size": 120 },
+  "align": "left", "valign": "center", "transition": "cut", "pad": 100,
+  "lines": [
+    { "kind": "kicker", "text": "{{s.title}}", "size": 30, "color": "accent",
+      "at": 0.04, "dur": 0.36, "dy": 20, "out": 99 },
+    { "kind": "row", "repeat": "{{s.items}}", "stagger": 0.16,
+      "letter": "{{item.n}}", "letterSize": 78, "letterWidth": 92, "color": "accent",
+      "word": "{{item}}", "wordSize": 56, "wordColor": "ink",
+      "gap": 46, "colGap": 26, "at": 0.26, "dur": 0.38, "out": 99 }
+  ]
+}

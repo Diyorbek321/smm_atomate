@@ -1,0 +1,12 @@
+{
+  "desc": "Yopilish: katta chaqiruv + brend kapsulasi.",
+  "needs": ["headline"],
+  "grid": { "bg": "bg", "color": "rgba(255,255,255,.075)", "size": 120 },
+  "align": "center", "valign": "center", "transition": "cut",
+  "lines": [
+    { "kind": "display", "text": "{{s.headline}}", "size": 150, "color": "ink",
+      "at": 0.04, "dur": 0.44, "out": 99 },
+    { "kind": "pill", "text": "{{brand.cta}}", "size": 42, "gap": 62,
+      "at": 0.46, "dur": 0.4, "out": 99 }
+  ]
+}
