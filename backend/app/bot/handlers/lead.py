@@ -97,6 +97,12 @@ async def lead_phone(
     )
     await session.flush()
     await message.answer(texts.LEAD_THANKS, reply_markup=ReplyKeyboardRemove())
+    if phone and business_id is not None:
+        # Committed first: the CRM worker reads the row from its own session.
+        await session.commit()
+        from app.tasks.crm import enqueue_sync
+
+        enqueue_sync(lead.id)
 
     if business_id is not None:
         try:

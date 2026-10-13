@@ -14,6 +14,20 @@ from app.schemas.common import APIResponse
 
 log = get_logger(__name__)
 
+def _reachable(url: str) -> bool:
+    """Whether Meta could actually resolve this base URL.
+
+    Not a network check — a name check. `localhost` is Meta's own localhost,
+    and every Instagram publish and every webhook delivery fails on it while
+    the error text talks about media or subscriptions instead.
+    """
+    lowered = (url or "").lower()
+    if not lowered.startswith("https://"):
+        return False
+    return not any(host in lowered for host in
+                   ("localhost", "127.0.0.1", "0.0.0.0", "::1", ".local"))
+
+
 #: Root-level, unauthenticated: probes and the Telegram webhook.
 router = APIRouter(tags=["system"])
 #: Mounted under /api/v1 and protected by the API key.
@@ -74,7 +88,17 @@ async def provider_status(_: AuthDep) -> APIResponse[dict]:
                 "configured": get_transcriber().enabled,
             },
             "telegram_bot": {"configured": bool(settings.telegram_bot_token)},
-            "meta": {"configured": bool(settings.meta_app_id and settings.meta_app_secret)},
+            "meta": {
+                "configured": bool(settings.meta_app_id and settings.meta_app_secret),
+                "app_id": bool(settings.meta_app_id),
+                "app_secret": bool(settings.meta_app_secret),
+                "webhook": bool(settings.meta_verify_token),
+                # Named rather than implied. Instagram *pulls* media from this
+                # URL and *pushes* webhooks to it, so a localhost value means
+                # both directions fail — silently, and for a reason that looks
+                # nothing like a networking problem from the Meta error text.
+                "reachable_base_url": _reachable(settings.public_base_url),
+            },
             "public_base_url": settings.public_base_url,
         }
     )

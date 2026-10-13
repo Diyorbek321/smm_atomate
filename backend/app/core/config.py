@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     meta_graph_base: str = "https://graph.facebook.com"
     meta_app_id: str = ""
     meta_app_secret: str = ""
+    #: Echoed back to Meta during webhook registration. Any string, as long as
+    #: it matches what is typed into the app dashboard; empty disables the
+    #: Instagram webhook entirely rather than accepting anyone's traffic.
+    meta_verify_token: str = ""
 
     # --- Media -----------------------------------------------------------
     media_root: Path = BASE_DIR / "media"

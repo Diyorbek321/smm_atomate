@@ -19,7 +19,8 @@ class LeadRepository(BaseRepository[Lead]):
         self,
         *,
         business_id: uuid.UUID | None,
-        telegram_user_id: int,
+        telegram_user_id: int | None = None,
+        ig_user_id: str = "",
         full_name: str = "",
         username: str = "",
         phone: str = "",
@@ -29,6 +30,7 @@ class LeadRepository(BaseRepository[Lead]):
         lead = Lead(
             business_id=business_id,
             telegram_user_id=telegram_user_id,
+            ig_user_id=ig_user_id[:64] or None,
             full_name=full_name[:160],
             username=username[:160],
             phone=phone[:64],
@@ -38,6 +40,18 @@ class LeadRepository(BaseRepository[Lead]):
         self.session.add(lead)
         await self.session.flush()
         return lead
+
+    async def latest_from_telegram(
+        self, business_id: uuid.UUID, telegram_user_id: int
+    ) -> Lead | None:
+        """This person's most recent lead here, so a conversation stays one lead."""
+        stmt = (
+            select(Lead)
+            .where(Lead.business_id == business_id, Lead.telegram_user_id == telegram_user_id)
+            .order_by(Lead.created_at.desc())
+            .limit(1)
+        )
+        return (await self.session.execute(stmt)).scalars().first()
 
     async def counts_between(
         self, business_id: uuid.UUID, start: datetime, end: datetime

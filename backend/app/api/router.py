@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import analytics, businesses, content, generation, leads, prompts, system
+from app.api.v1 import (
+    analytics,
+    businesses,
+    content,
+    generation,
+    instagram,
+    leads,
+    prompts,
+    system,
+    telegram_chat,
+)
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(businesses.router)
@@ -15,8 +25,11 @@ api_router.include_router(analytics.router)
 api_router.include_router(leads.router)
 api_router.include_router(system.admin_router)
 
-#: Health + webhook live at the root, outside the versioned prefix.
+#: Health + webhooks live at the root, outside the versioned prefix. Meta is
+#: given one URL per app and it has to stay stable across API versions.
 system_router = APIRouter()
 system_router.include_router(system.router)
+system_router.include_router(instagram.router)
+system_router.include_router(telegram_chat.router)
 
 __all__ = ["api_router", "system_router"]

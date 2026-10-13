@@ -4,6 +4,7 @@ from aiogram import Router
 
 from app.bot.handlers import (
     admin,
+    comments,
     lead,
     onboarding,
     reactions,
@@ -15,6 +16,7 @@ from app.bot.handlers import (
 
 #: Order matters: specific flows first, the catch-all last.
 HANDLER_ROUTERS = (
+    comments.router,  # every group message, before any DM catch-all
     start.router,
     review.router,
     onboarding.router,

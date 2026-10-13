@@ -19,6 +19,9 @@ celery_app = Celery(
         "app.tasks.publishing",
         "app.tasks.maintenance",
         "app.tasks.metrics",
+        "app.tasks.instagram",
+        "app.tasks.telegram_chat",
+        "app.tasks.crm",
     ],
 )
 
@@ -40,6 +43,11 @@ celery_app.conf.update(
         "app.tasks.generation.*": {"queue": "generation"},
         "app.tasks.publishing.*": {"queue": "publishing"},
         "app.tasks.maintenance.*": {"queue": "default"},
+        # Answering a stranger is a person waiting on a reply, so it goes to
+        # the publishing queue rather than queueing behind a clip render.
+        "app.tasks.instagram.*": {"queue": "publishing"},
+        "app.tasks.telegram_chat.*": {"queue": "publishing"},
+        "app.tasks.crm.*": {"queue": "publishing"},
     },
     task_annotations={
         "app.tasks.generation.generate_weekly_plan": {"time_limit": 1800, "soft_time_limit": 1740},
@@ -49,6 +57,12 @@ celery_app.conf.update(
 )
 
 celery_app.conf.beat_schedule = {
+    # Leads the instant push missed (CRM down, worker restarted, backfill).
+    "sync-leads-to-crm": {
+        "task": "app.tasks.crm.sync_pending",
+        "schedule": crontab(minute="*/10"),
+        "options": {"queue": "publishing", "expires": 590},
+    },
     # The publishing heartbeat — the core of the scheduler.
     "publish-due-content": {
         "task": "app.tasks.publishing.publish_due_content",
