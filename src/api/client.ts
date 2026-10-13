@@ -17,6 +17,8 @@ import type {
   AnalyticsSummary,
   ApiEnvelope,
   Business,
+  VideoPromptRequest,
+  VideoPromptResult,
   BusinessAnalytics,
   BusinessCreate,
   BusinessUpdate,
@@ -239,6 +241,8 @@ export const api = {
       }),
     publishNow: (itemId: string, force = false) =>
       send<GenerationTask>('POST', `/generate/item/${itemId}/publish`, { force }),
+    videoPrompt: (payload: VideoPromptRequest) =>
+      send<VideoPromptResult>('POST', '/generate/video-prompt', payload),
     task: (taskId: string) =>
       get<{ task_id: string; state: string; ready?: boolean; result?: unknown; error?: string }>(
         `/generate/task/${taskId}`,

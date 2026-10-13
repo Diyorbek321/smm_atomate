@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from aiogram.types import FSInputFile, InputMediaPhoto
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot import texts
 from app.bot.main import bot_session
 from app.bot.review import send_item_for_review, send_plan_summary
 from app.core.exceptions import ConfigurationError
@@ -81,6 +82,39 @@ async def notify_admins(session: AsyncSession, business_id: uuid.UUID, text: str
                     log.warning("notify_failed", user=reviewer.telegram_user_id, error=str(exc)[:160])
     except ConfigurationError as exc:
         log.warning("notify_skipped", reason=str(exc))
+    return sent
+
+
+async def push_script(
+    session: AsyncSession,
+    business_id: uuid.UUID,
+    says: list[str],
+    *,
+    skeleton: str = "",
+) -> int:
+    """Send the owner the lines to read, numbered, one per scene.
+
+    Numbered because the recording is split back apart on its pauses, and the
+    pauses only line up if the reader knows where the lines are. The
+    instruction to pause is the whole contract between this message and
+    :func:`app.services.tts.split`.
+    """
+    reviewers = await reviewers_for(session, business_id)
+    lines = "\n\n".join(f"{index + 1}. {line}" for index, line in enumerate(says))
+    text = texts.SCRIPT_READY.format(count=len(says), skeleton=skeleton, lines=lines)
+
+    sent = 0
+    try:
+        async with bot_session() as bot:
+            for reviewer in reviewers:
+                try:
+                    await bot.send_message(reviewer.telegram_user_id, text)
+                    sent += 1
+                except Exception as exc:
+                    log.warning("script_push_failed", admin=reviewer.telegram_user_id,
+                                error=str(exc)[:200])
+    except Exception as exc:
+        log.warning("script_push_no_bot", error=str(exc)[:200])
     return sent
 
 

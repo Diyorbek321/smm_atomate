@@ -19,6 +19,12 @@ from app.agents.hook import HookAgent, HookRequest
 from app.agents.marketolog import MarketingRequest, MarketologAgent
 from app.agents.scout import ScoutAgent, ScoutRequest
 from app.agents.strategist import StrategistAgent, StrategyRequest
+from app.agents.style_distiller import (
+    DistillRequest,
+    StyleDistillerAgent,
+    feedback_digest,
+    save_rules,
+)
 from app.agents.visual import VisualAgent, VisualRequest
 from app.core.config import settings
 from app.core.exceptions import NotFoundError
@@ -44,9 +50,21 @@ log = get_logger(__name__)
 
 #: How many items are generated concurrently (each is several LLM calls).
 #: Configurable because providers meter tokens per minute.
-#: An item below this editor score is rewritten once before giving up.
+#: An item below this editor score is rewritten before giving up.
 REWRITE_THRESHOLD = 7.0
-MAX_REWRITES = 1
+MAX_REWRITES = 2
+#: The second rewrite is paid for only when the first one still reads badly —
+#: a 6.8 is a review-queue judgement call, a 5.0 is not yet a post.
+SECOND_REWRITE_BELOW = 6.0
+
+
+def _should_rewrite(review: EditorResult, rewrites: int) -> bool:
+    """Whether another rewrite pass is worth its two LLM calls."""
+    if review.approved and review.score >= REWRITE_THRESHOLD:
+        return False
+    if rewrites >= MAX_REWRITES:
+        return False
+    return rewrites < 1 or review.score < SECOND_REWRITE_BELOW
 
 #: (slot, copy, review, visual, error) — one generated slot, error set on failure.
 SlotOutcome = tuple[
@@ -100,6 +118,7 @@ class ContentPipeline:
         #: Filled once per orchestrator, not once per slot — eight posts in a
         #: week would otherwise mean eight identical queries.
         self._recent_subjects: dict[uuid.UUID, list[tuple[str, str]]] = {}
+        self._gold_examples: dict[uuid.UUID, list[str]] = {}
 
     # ------------------------------------------------------------------ #
     # Full plan generation
@@ -125,6 +144,10 @@ class ContentPipeline:
 
         plan = await self._prepare_plan(business, start, horizon_days, total)
         result = PipelineResult(plan=plan)
+
+        # Last period's feedback becomes standing rules before a word of this
+        # week's copy is written — the one step that closes the learning loop.
+        await self._learn_style(business)
 
         # Fetched once and shared: the marketolog and the strategist plan from
         # the same two months, and this is the same query either way.
@@ -326,6 +349,31 @@ class ContentPipeline:
             )
         return instructions
 
+    async def _learn_style(self, business: Business) -> None:
+        """Refresh the business's learned copywriter rules from its own feedback.
+
+        Once per weekly plan. Failure is logged and swallowed — a learning
+        step must never cost a plan — and below the signal floor nothing is
+        touched, so existing rules survive quiet weeks.
+        """
+        if not settings.use_style_distiller:
+            return
+        try:
+            items = list(
+                await self.items.produced_between(business.id, days=settings.style_window_days)
+            )
+            digest = feedback_digest(items)
+            if int(digest.get("signals") or 0) < settings.style_min_signals:
+                return
+            agent = StyleDistillerAgent(session=self.session, usage=self.usage)
+            result = await agent.run(DistillRequest(business=business, digest=digest))
+            if result.rules and await save_rules(self.session, business.id, result.rules):
+                log.info(
+                    "style_rules_updated", business=str(business.id), rules=len(result.rules)
+                )
+        except Exception as exc:
+            log.warning("style_learning_failed", business=str(business.id), error=str(exc)[:200])
+
     async def _strategy(
         self,
         business: Business,
@@ -411,6 +459,23 @@ class ContentPipeline:
             return [pair for pair in cached if pair != exclude]
         return cached
 
+    async def _gold_for(self, business: Business) -> list[str]:
+        """Captions of this business's best-reacted posts, fetched at most once."""
+        if not settings.gold_examples_count:
+            return []
+        cached = self._gold_examples.get(business.id)
+        if cached is None:
+            try:
+                items = await self.items.top_performing(
+                    business.id, limit=settings.gold_examples_count
+                )
+                cached = [item.caption_tg for item in items]
+            except Exception as exc:                     # examples are a nicety
+                log.warning("gold_examples_failed", error=str(exc)[:200])
+                cached = []
+            self._gold_examples[business.id] = cached
+        return cached
+
     def _remember_subject(
         self,
         business: Business,
@@ -475,6 +540,7 @@ class ContentPipeline:
             extra_instructions=extra_instructions,
             previous_caption=previous_caption,
             recent_headlines=self._headline_lines(history),
+            gold_examples=await self._gold_for(business),
         )
         copy = await copywriter.run(copy_request)
 
@@ -489,9 +555,9 @@ class ContentPipeline:
             )
         )
 
-        # Self-reflection loop: one targeted rewrite when the editor is unhappy.
+        # Self-reflection loop: targeted rewrites while the editor is unhappy.
         rewrites = 0
-        while (not review.approved or review.score < REWRITE_THRESHOLD) and rewrites < MAX_REWRITES:
+        while _should_rewrite(review, rewrites):
             rewrites += 1
             notes = "; ".join(
                 f"{issue.field}: {issue.problem} → {issue.suggestion}".strip(" →")

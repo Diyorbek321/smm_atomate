@@ -13,7 +13,8 @@ import {
   Terminal,
   Zap,
   Sun,
-  Moon
+  Moon,
+  Clapperboard
 } from 'lucide-react';
 import { useApp } from '../../AppContext';
 import { cn } from '@/lib/utils';
@@ -33,6 +34,7 @@ const navItems = [
   { id: 'businesses', label: 'Businesses', icon: Building2 },
   { id: 'prompts', label: 'AI Prompt Studio', icon: Wand2 },
   { id: 'planner', label: 'Content Planner', icon: Calendar },
+  { id: 'video-prompt', label: 'Video Prompt', icon: Clapperboard },
   { id: 'integrations', label: 'Integrations', icon: Settings2 },
   { id: 'logs', label: 'System Logs', icon: Terminal },
 ];

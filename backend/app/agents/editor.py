@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from app.agents.base import BaseAgent, knowledge_context
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agents.base import AgentUsage, BaseAgent, knowledge_context
 from app.agents.facts import collect_facts, mentions_a_fact
 from app.agents.prompts import EDITOR_SYSTEM
 from app.core.logging import get_logger
@@ -14,6 +16,7 @@ from app.models.enums import ContentType
 from app.models.knowledge_base import KnowledgeBase
 from app.schemas.content import CopyOutput, EditorIssue, EditorOutput
 from app.services.brand_kit import find_banned_words, kit_for
+from app.services.llm import get_review_llm
 from app.utils.similarity import (
     DUPLICATE_THRESHOLD,
     NEAR_IDENTICAL_THRESHOLD,
@@ -89,6 +92,16 @@ class EditorResult:
 
 class EditorAgent(BaseAgent):
     name = "editor"
+    #: A weak reviewer approves weak copy — the gatekeeper reads with the
+    #: strong model, like the writer it judges.
+    use_pro_model = True
+
+    def __init__(self, session: AsyncSession | None = None, usage: AgentUsage | None = None) -> None:
+        super().__init__(session=session, usage=usage)
+        # A different model family than the writer's, when one is configured:
+        # a model reviewing its own prose shares its blind spots and passes
+        # them straight through to the feed.
+        self.llm = get_review_llm()
 
     async def run(self, request: EditorRequest) -> EditorResult:
         local_issues = self.static_checks(request)

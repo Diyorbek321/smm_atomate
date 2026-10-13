@@ -1,0 +1,41 @@
+{
+  "desc": "To'liq kadr fotosurat, ustida katta raqam va yorliq. Isbot va natija sahnasi uchun.",
+  "needs": [
+    "label",
+    "to",
+    "suffix?"
+  ],
+  "still": true,
+  "align": "left",
+  "valign": "bottom",
+  "transition": "cut",
+  "lines": [
+    {
+      "kind": "display",
+      "text": "{{s.to}}{{s.suffix|}}",
+      "size": 210,
+      "color": "accent",
+      "at": 0.06,
+      "dur": 0.42,
+      "out": 99
+    },
+    {
+      "kind": "kicker",
+      "text": "{{s.label}}",
+      "size": 46,
+      "gap": 8,
+      "at": 0.22,
+      "dur": 0.4,
+      "out": 99
+    },
+    {
+      "kind": "karaoke",
+      "size": 42,
+      "wrap": 880,
+      "gap": 60,
+      "at": 0.34,
+      "dur": 0.42,
+      "out": 99
+    }
+  ]
+}

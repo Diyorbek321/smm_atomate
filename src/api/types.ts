@@ -88,8 +88,36 @@ export const AGENTS = [
   'editor',
   'onboarding',
   'feedback',
+  'video_prompt',
 ] as const;
 export type AgentName = (typeof AGENTS)[number];
+
+export type VideoPromptFormat = 'showreel' | 'promo' | 'explainer' | 'elon' | 'natija';
+export type VideoPromptAspect = '9:16' | '1:1' | '4:5' | '16:9';
+
+export interface VideoPromptRequest {
+  business_id: string;
+  format: VideoPromptFormat;
+  aspect: VideoPromptAspect;
+  duration: number;
+  goal?: string;
+  extra?: string;
+}
+
+export interface VideoPromptResult {
+  prompt: string;
+  concept: {
+    title: string;
+    concept: string;
+    message: string;
+    scenes: string[];
+    sound: string;
+    closing: string;
+  };
+  fallback: boolean;
+  unverified: string[];
+  usage: Record<string, unknown>;
+}
 
 // --------------------------------------------------------------------------
 // Envelope

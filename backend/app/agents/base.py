@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
@@ -62,6 +63,66 @@ class AgentUsage:
         }
 
 
+#: Templates whose name starts with this are addenda, not replacements: the
+#: rules the style distiller learned from this business's own feedback. They
+#: are appended to whatever base prompt wins, so a code update to the default
+#: prompt never loses them and they never freeze it.
+LEARNED_PREFIX = "learned:"
+
+
+def resolve_prompt(
+    rows: Sequence[PromptTemplate],
+    default: str,
+    *,
+    business_id: uuid.UUID | None,
+    pillar: ContentPillar | None,
+) -> tuple[str, list[PromptTemplate]]:
+    """Pick the effective system prompt from the stored templates.
+
+    Pure on purpose — this is the part worth unit-testing. Override lookup
+    order is unchanged: (business, pillar) → (business, any) → (global,
+    pillar) → default. A matching `learned:` addendum for the same business is
+    then appended to whichever base won. Returns the prompt and the rows that
+    produced it, for usage accounting.
+    """
+    overrides = [row for row in rows if not row.name.startswith(LEARNED_PREFIX)]
+    used: list[PromptTemplate] = []
+
+    def _match(row: PromptTemplate, want_business: bool, want_pillar: bool) -> bool:
+        business_ok = (row.business_id == business_id) if want_business else row.business_id is None
+        pillar_ok = (row.pillar == pillar) if want_pillar else row.pillar is None
+        return business_ok and pillar_ok
+
+    prompt = default
+    for want_business, want_pillar in ((True, True), (True, False), (False, True), (False, False)):
+        if want_business and business_id is None:
+            continue
+        if want_pillar and pillar is None:
+            continue
+        row = next((r for r in overrides if _match(r, want_business, want_pillar)), None)
+        if row is not None:
+            prompt = row.system_prompt
+            used.append(row)
+            break
+
+    if business_id is not None:
+        addendum = next(
+            (
+                row
+                for row in rows
+                if row.name.startswith(LEARNED_PREFIX)
+                and row.business_id == business_id
+                and (row.pillar is None or row.pillar == pillar)
+            ),
+            None,
+        )
+        if addendum is not None and addendum.system_prompt.strip():
+            prompt = f"{prompt}\n\n{addendum.system_prompt.strip()}"
+            used.append(addendum)
+
+    return prompt, used
+
+
 class BaseAgent:
     """Base class handling prompt resolution and Gemini calls.
 
@@ -106,22 +167,11 @@ class BaseAgent:
         if not rows:
             return default
 
-        def _match(row: PromptTemplate, want_business: bool, want_pillar: bool) -> bool:
-            business_ok = (row.business_id == business_id) if want_business else row.business_id is None
-            pillar_ok = (row.pillar == pillar) if want_pillar else row.pillar is None
-            return business_ok and pillar_ok
-
-        for want_business, want_pillar in ((True, True), (True, False), (False, True), (False, False)):
-            if want_business and business_id is None:
-                continue
-            if want_pillar and pillar is None:
-                continue
-            for row in rows:
-                if _match(row, want_business, want_pillar):
-                    row.usage_count += 1
-                    log.debug("prompt_override_used", agent=self.name, template=row.name)
-                    return row.system_prompt
-        return default
+        prompt, used = resolve_prompt(rows, default, business_id=business_id, pillar=pillar)
+        for row in used:
+            row.usage_count += 1
+            log.debug("prompt_override_used", agent=self.name, template=row.name)
+        return prompt
 
     # ------------------------------------------------------------------ #
     async def ask_json(

@@ -245,8 +245,8 @@ async def generate_brief(
 
     The families behind `/promo` are ten authored videos; this path sequences
     eleven authored *scenes*, so the shape of the clip follows the subject
-    instead of the pillar. `scenes` sets the length (3-12, default 8) and
-    `mood` overrides what the model picks for the bed.
+    instead of the pillar. `scenes` overrides the length (3-12); left out, the
+    chosen skeleton sets it. `mood` overrides what the model picks for the bed.
     """
     from app.core.exceptions import ValidationError
     from app.services.promo_scenes import MOODS
@@ -256,8 +256,11 @@ async def generate_brief(
     if not raw_business or not topic:
         raise ValidationError("`business_id` va `topic` majburiy")
 
-    scenes = int(payload.get("scenes", 8))
-    if not 3 <= scenes <= 12:
+    # Zero means "the skeleton decides", which is now the default: the
+    # skeletons are deliberately different lengths and pinning every clip to
+    # eight scenes was half of why they all felt the same.
+    scenes = int(payload.get("scenes", 0))
+    if scenes and not 3 <= scenes <= 12:
         raise ValidationError("`scenes` 3 va 12 orasida bo'lishi kerak")
     mood = str(payload.get("mood", "")).strip() or None
     if mood and mood not in MOODS:
@@ -272,13 +275,69 @@ async def generate_brief(
             f"Promo klip «{business.plan}» tarifiga kirmaydi — Pro tarifi kerak"
         )
 
+    # Narration is on unless asked otherwise: it costs daily quota, so a
+    # caller iterating on structure can turn it off and keep the allowance.
+    voice = bool(payload.get("voice", True))
     task_id = _enqueue("app.tasks.generation.render_brief_clip", str(business_id),
-                       topic=topic, scenes=scenes, mood=mood)
+                       topic=topic, scenes=scenes, mood=mood, voice=voice)
     if not task_id:
         raise ValidationError("Navbat mavjud emas — keyinroq urinib ko'ring")
     return APIResponse.ok({
-        "task_id": task_id, "status": "queued", "scenes": scenes,
+        "task_id": task_id, "status": "queued", "scenes": scenes or "skeletdan",
         "message": "Klip navbatga qo'yildi — /generate/task/{id} orqali kuzating",
+    })
+
+
+@router.post("/video-prompt", response_model=APIResponse[dict])
+async def generate_video_prompt(
+    payload: dict, session: SessionDep, _: AuthDep
+) -> APIResponse[dict]:
+    """Write a ready-to-run HyperFrames prompt for this business.
+
+    Synchronous: one model call, and the owner is waiting to copy the text.
+    When the model fails the profile-built fallback still comes back, marked
+    `fallback: true`, so the owner always gets a prompt that runs.
+    """
+    from app.agents import AgentUsage
+    from app.agents.video_prompt import ASPECTS, FORMATS, VideoPromptAgent, VideoPromptRequest
+    from app.core.exceptions import ValidationError
+
+    raw_business = str(payload.get("business_id", "")).strip()
+    if not raw_business:
+        raise ValidationError("`business_id` majburiy")
+    fmt = str(payload.get("format", "promo")).strip() or "promo"
+    if fmt not in FORMATS:
+        raise ValidationError(f"Noma'lum format «{fmt}». Mavjud: {', '.join(FORMATS)}")
+    aspect = str(payload.get("aspect", "9:16")).strip() or "9:16"
+    if aspect not in ASPECTS:
+        raise ValidationError(f"Noma'lum o'lcham «{aspect}». Mavjud: {', '.join(ASPECTS)}")
+    try:
+        duration = int(payload.get("duration", 15))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("`duration` butun son bo'lishi kerak") from exc
+
+    try:
+        business_id = uuid.UUID(raw_business)
+    except ValueError as exc:
+        raise ValidationError("`business_id` noto'g'ri") from exc
+    business = await BusinessRepository(session).get_full_or_404(business_id)
+
+    usage = AgentUsage()
+    result = await VideoPromptAgent(session, usage).run(VideoPromptRequest(
+        business=business,
+        knowledge=business.knowledge_base,
+        goal=str(payload.get("goal", ""))[:500],
+        format=fmt,
+        duration=duration,
+        aspect=aspect,
+        extra=str(payload.get("extra", ""))[:500],
+    ))
+    return APIResponse.ok({
+        "prompt": result.prompt,
+        "concept": result.concept.model_dump(),
+        "fallback": result.fallback,
+        "unverified": result.unverified,
+        "usage": usage.as_dict(),
     })
 
 
@@ -312,6 +371,47 @@ async def _queue_promo(
     return APIResponse.ok({
         "task_id": task_id, "status": "queued", "family": family or f"({pillar} bo'yicha)",
         "message": f"{queued_message} — /generate/task/{{id}} orqali kuzating",
+    })
+
+
+@router.post("/remotion", response_model=APIResponse[dict])
+async def generate_remotion(
+    payload: dict, session: SessionDep, _: AuthDep
+) -> APIResponse[dict]:
+    """Render a clip through the Remotion service (React/SVG motion).
+
+    Always queued: a 30-50 s clip is a few minutes of browser time. The model
+    writes copy only; the timing is locked to the music bed and the layout
+    lives in ``backend/remotion``.
+    """
+    from app.core.config import settings
+    from app.core.exceptions import ConfigurationError, ValidationError
+
+    raw_business = str(payload.get("business_id", "")).strip()
+    topic = str(payload.get("topic", "")).strip()
+    if not raw_business or not topic:
+        raise ValidationError("`business_id` va `topic` majburiy")
+    if len(topic) > 300:
+        raise ValidationError("`topic` 300 belgidan oshmasin")
+    try:
+        business_id = uuid.UUID(raw_business)
+    except ValueError as exc:
+        raise ValidationError("`business_id` UUID bo'lishi kerak") from exc
+    if not settings.remotion_url.strip():
+        raise ConfigurationError("Remotion servisi ulanmagan — REMOTION_URL ni sozlang")
+
+    business = await BusinessRepository(session).get_full_or_404(business_id)
+    if not business.capabilities.video:
+        raise ValidationError(
+            f"Remotion klip «{business.plan}» tarifiga kirmaydi — Pro tarifi kerak"
+        )
+
+    task_id = _enqueue("app.tasks.generation.render_remotion_clip", str(business_id), topic=topic)
+    if not task_id:
+        raise ValidationError("Navbat mavjud emas — keyinroq urinib ko'ring")
+    return APIResponse.ok({
+        "task_id": task_id, "status": "queued", "engine": "remotion",
+        "message": "Klip navbatga qo'yildi — /generate/task/{id} orqali kuzating",
     })
 
 

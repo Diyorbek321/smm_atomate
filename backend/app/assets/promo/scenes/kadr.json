@@ -1,0 +1,19 @@
+{
+  "desc": "To'liq kadr fotosurat, pastda bitta gap. Ilgak va hikoya sahnasi uchun — rasm predmet, matn emas.",
+  "needs": [],
+  "still": true,
+  "align": "left",
+  "valign": "bottom",
+  "transition": "cut",
+  "lines": [
+    {
+      "kind": "karaoke",
+      "size": 52,
+      "wrap": 900,
+      "gap": 150,
+      "at": 0.1,
+      "dur": 0.44,
+      "out": 99
+    }
+  ]
+}

@@ -13,7 +13,10 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from app.core.logging import get_logger
 from app.services.storage import get_storage
+
+log = get_logger(__name__)
 
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
 
@@ -140,6 +143,35 @@ def photo_library(business_id: uuid.UUID | str | None = None, topic: str = "") -
         if found:
             return found
     return []
+
+
+def backdrop_library(
+    business_id: uuid.UUID | str, colors: dict[str, str] | None = None
+) -> list[Path]:
+    """Pictures a clip can run behind, drawn on first use if there are none.
+
+    :func:`photo_library` answers "what does this business have"; this answers
+    "what can this clip use", and the difference matters on day one. A new
+    client has an empty shelf, and the honest response to that is not a flat
+    colour for their first month — :mod:`app.services.backdrops` draws six
+    motifs from the palette already in the knowledge base, costs nothing and
+    needs no quota, so the shelf is filled rather than reported empty.
+
+    Generation failures are swallowed: a clip without a backdrop is the
+    behaviour every clip had until now, and is not worth failing a render for.
+    """
+    found = photo_library(business_id)
+    if found:
+        return found
+    try:
+        from app.services.backdrops import generate_library
+
+        return generate_library(business_dir(business_id) / "photos",
+                                colors or {}, prefix="bg")
+    except Exception as exc:  # pragma: no cover - drawing is pure PIL
+        log.warning("backdrops_unavailable", business=str(business_id),
+                    error=str(exc)[:200])
+        return []
 
 
 def media_readiness(business_id: uuid.UUID | str) -> dict[str, object]:

@@ -41,6 +41,24 @@ QUIZ_ANSWERS = (3, 4)
 #: short enough that it does not crowd out the knowledge base and the facts.
 HISTORY_LINES = 12
 
+#: Gold examples shown to the writer, and how much of each caption survives.
+#: Three full-ish captions cost about as much prompt as the knowledge base —
+#: any more and the examples start crowding out the facts they exist to serve.
+GOLD_EXAMPLES_MAX = 3
+GOLD_EXAMPLE_CHARS = 450
+
+#: Output budget per format. A reels script is the longest JSON this agent
+#: produces, and reasoning models spend completion tokens on hidden thinking
+#: too — 2500 is exactly where the eval's reels brief died mid-JSON on a
+#: fallback model, so the long formats get more room.
+MAX_OUTPUT_TOKENS = 2500
+MAX_OUTPUT_TOKENS_LONG = 3500
+LONG_FORMATS = frozenset({ContentType.REELS_SCRIPT, ContentType.CAROUSEL})
+
+
+def token_budget(content_type: ContentType) -> int:
+    return MAX_OUTPUT_TOKENS_LONG if content_type in LONG_FORMATS else MAX_OUTPUT_TOKENS
+
 
 @dataclass(slots=True)
 class CopyRequest:
@@ -57,6 +75,9 @@ class CopyRequest:
     #: `previous_caption` covers one rewrite of one post; this covers the month,
     #: which is the scale at which a feed starts repeating itself.
     recent_headlines: list[str] = field(default_factory=list)
+    #: Captions of this business's best-performing published posts. Rules say
+    #: what to avoid; only an example says what good sounds like.
+    gold_examples: list[str] = field(default_factory=list)
 
 
 def _states_the_phone(caption: str, phone: str) -> bool:
@@ -87,6 +108,11 @@ def _repeats(caption: str, block: str, phone: str = "") -> bool:
 
 class CopywriterAgent(BaseAgent):
     name = "copywriter"
+    #: The only words a follower ever reads come out of this agent, so it gets
+    #: the strong model. The planners can afford the fast one; the writer of
+    #: low-resource Uzbek cannot — the fact-retry loop below exists precisely
+    #: because the small model kept dropping the numbers.
+    use_pro_model = True
 
     async def run(self, request: CopyRequest) -> CopyOutput:
         system = await self.system_prompt(
@@ -103,7 +129,7 @@ class CopywriterAgent(BaseAgent):
                     CopyOutputStrict,
                     system=system,
                     temperature=0.95,
-                    max_tokens=2500,
+                    max_tokens=token_budget(request.content_type),
                 )
             ).to_copy_output(),
             request,
@@ -126,7 +152,7 @@ class CopywriterAgent(BaseAgent):
                         CopyOutputStrict,
                         system=system,
                         temperature=0.7,
-                        max_tokens=2500,
+                        max_tokens=token_budget(request.content_type),
                     )
                 ).to_copy_output(),
                 retry,
@@ -173,6 +199,8 @@ class CopywriterAgent(BaseAgent):
             )
         if history := self._history_block(request.recent_headlines):
             blocks.append(history)
+        if gold := self._gold_block(request.gold_examples):
+            blocks.append(gold)
         if request.extra_instructions:
             blocks.append(f"QO'SHIMCHA KO'RSATMA (eng yuqori ustuvorlik): {request.extra_instructions}")
 
@@ -208,6 +236,27 @@ class CopywriterAgent(BaseAgent):
         return (
             "SHU BRENDDA YAQINDA YOZILGAN SARLAVHALAR — bularning birortasini "
             "takrorlama, o'xshash ochilish va o'xshash burchakdan qoch:\n" + "\n".join(lines)
+        )
+
+    @staticmethod
+    def _gold_block(examples: list[str]) -> str:
+        """The posts this audience demonstrably responded to, as a bar to clear.
+
+        Whole captions, unlike the one-line history block: the history exists
+        to be avoided, so its shape is enough, but an example teaches through
+        its structure — where the fact lands, how the CTA arrives — and a
+        first line carries none of that. Capped hard anyway; three examples
+        set the bar as well as ten.
+        """
+        trimmed = [" ".join(e.split())[:GOLD_EXAMPLE_CHARS] for e in examples if e.strip()]
+        trimmed = trimmed[:GOLD_EXAMPLES_MAX]
+        if not trimmed:
+            return ""
+        listed = "\n\n".join(f"NAMUNA {i}:\n{text}" for i, text in enumerate(trimmed, 1))
+        return (
+            "OLTIN NAMUNALAR — shu biznesning eng ko'p reaksiya olgan postlari. "
+            "Ularning DARAJASINI ol: aniqlik, ohang, tuzilish. Gapini yoki "
+            "mavzusini KO'CHIRMA — bu yangi post:\n\n" + listed
         )
 
     @staticmethod

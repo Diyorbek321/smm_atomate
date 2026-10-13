@@ -129,36 +129,36 @@ class TestDesignerSanitise:
 class TestEditPlanSanitise:
     def test_clamps_segments_past_the_end_of_the_file(self):
         plan = EditPlan(keep=[KeepSegment(start=0, end=90)])
-        out = VideoEditorAgent._sanitise(plan, duration=30.0)
+        out, _ = VideoEditorAgent._sanitise(plan, duration=30.0)
         assert out.keep[0].end == 30.0
 
     def test_drops_segments_shorter_than_a_frame(self):
         plan = EditPlan(keep=[KeepSegment(start=1.0, end=1.1), KeepSegment(start=2.0, end=8.0)])
-        out = VideoEditorAgent._sanitise(plan, duration=30.0)
+        out, _ = VideoEditorAgent._sanitise(plan, duration=30.0)
         assert [(s.start, s.end) for s in out.keep] == [(2.0, 8.0)]
 
     def test_overlapping_segments_do_not_duplicate_speech(self):
         plan = EditPlan(keep=[KeepSegment(start=0, end=10), KeepSegment(start=5, end=15)])
-        out = VideoEditorAgent._sanitise(plan, duration=30.0)
+        out, _ = VideoEditorAgent._sanitise(plan, duration=30.0)
         assert [(s.start, s.end) for s in out.keep] == [(0.0, 10.0), (10.0, 15.0)]
 
     def test_segments_are_sorted_before_stitching(self):
         plan = EditPlan(keep=[KeepSegment(start=20, end=25), KeepSegment(start=2, end=8)])
-        out = VideoEditorAgent._sanitise(plan, duration=30.0)
+        out, _ = VideoEditorAgent._sanitise(plan, duration=30.0)
         assert [s.start for s in out.keep] == [2.0, 20.0]
 
     def test_total_is_trimmed_to_the_publishable_ceiling(self):
         plan = EditPlan(keep=[KeepSegment(start=0, end=40), KeepSegment(start=40, end=100)])
-        out = VideoEditorAgent._sanitise(plan, duration=120.0)
+        out, _ = VideoEditorAgent._sanitise(plan, duration=120.0)
         assert out.total_seconds <= 60.0
 
     def test_hook_outside_the_file_is_dropped(self):
         plan = EditPlan(keep=[KeepSegment(start=0, end=10)], hook_at=95.0)
-        assert VideoEditorAgent._sanitise(plan, duration=30.0).hook_at is None
+        assert VideoEditorAgent._sanitise(plan, duration=30.0)[0].hook_at is None
 
     def test_unknown_subtitle_style_becomes_full(self):
         plan = EditPlan(keep=[KeepSegment(start=0, end=10)], subtitle_style="karaoke")
-        assert VideoEditorAgent._sanitise(plan, duration=30.0).subtitle_style == "full"
+        assert VideoEditorAgent._sanitise(plan, duration=30.0)[0].subtitle_style == "full"
 
     def test_empty_plan_is_not_usable(self):
         assert EditPlan(keep=[]).is_usable is False

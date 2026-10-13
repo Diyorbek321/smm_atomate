@@ -1,0 +1,11 @@
+# Context is backend/; only remotion/ and the fonts are needed.
+.venv
+media
+tests
+scripts
+alembic
+**/__pycache__
+.env
+remotion/node_modules
+remotion/out
+remotion/public/fonts

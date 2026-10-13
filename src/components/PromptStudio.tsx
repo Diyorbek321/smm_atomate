@@ -46,6 +46,7 @@ const AGENT_HINTS: Record<string, string> = {
   editor: 'Reviews the copy and rewrites it when the score is low.',
   onboarding: 'Turns owner answers into structured knowledge.',
   feedback: 'Reads voice corrections and decides what to change.',
+  video_prompt: 'Writes the ready-to-run HyperFrames video prompt.',
 };
 
 export function PromptStudio() {

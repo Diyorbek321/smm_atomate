@@ -23,6 +23,12 @@ from app.agents.researcher import (
 )
 from app.agents.scout import ScoutAgent, ScoutRequest, TrendReport
 from app.agents.strategist import StrategistAgent, StrategyRequest, allocate_pillars
+from app.agents.style_distiller import (
+    DistilledRules,
+    DistillRequest,
+    StyleDistillerAgent,
+    feedback_digest,
+)
 from app.agents.video_editor import EditPlan, VideoEditorAgent, VideoEditRequest
 from app.agents.visual import VisualAgent, VisualOutput, VisualRequest
 
@@ -38,6 +44,8 @@ __all__ = [
     "DesignBrief",
     "DesignRequest",
     "DesignerAgent",
+    "DistillRequest",
+    "DistilledRules",
     "EditPlan",
     "EditorAgent",
     "EditorRequest",
@@ -59,6 +67,7 @@ __all__ = [
     "ScoutRequest",
     "StrategistAgent",
     "StrategyRequest",
+    "StyleDistillerAgent",
     "TrendReport",
     "VideoEditRequest",
     "VideoEditorAgent",
@@ -66,6 +75,7 @@ __all__ = [
     "VisualOutput",
     "VisualRequest",
     "allocate_pillars",
+    "feedback_digest",
     "merge_into_knowledge",
     "production_stats",
 ]

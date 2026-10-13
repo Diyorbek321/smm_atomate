@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     llm_fallbacks: str = "groq,gemini"
     llm_max_output_tokens: int = 4096
     llm_temperature: float = 0.9
+    #: Provider for the editor's review pass. A model reviewing its own prose
+    #: shares its blind spots, so the reviewer should come from a different
+    #: family than the writer whenever a second key is configured. Empty, an
+    #: unconfigured name, or the primary provider itself all mean "review with
+    #: the main client".
+    review_llm_provider: Literal["", "gemini", "openai", "groq"] = ""
 
     # --- Gemini ----------------------------------------------------------
     gemini_api_key: str = ""
@@ -94,6 +100,12 @@ class Settings(BaseSettings):
     fal_model: str = "fal-ai/flux/schnell"
     #: Image-to-video model for AI-animated clips (Seedance/Kling on fal.ai).
     fal_video_model: str = "fal-ai/bytedance/seedance/v1/lite/image-to-video"
+
+    # --- Remotion render service (backend/remotion) -------------------------
+    #: Empty disables the engine; compose sets it to the `remotion` service.
+    remotion_url: str = ""
+    #: A 60 s clip renders in ~3 minutes on one core; leave headroom for a queue.
+    remotion_timeout: float = 900.0
     replicate_api_token: str = ""
     replicate_model: str = "black-forest-labs/flux-schnell"
 
@@ -191,6 +203,20 @@ class Settings(BaseSettings):
     #: reports what is earning attention in the niche. The only agent here that
     #: looks outside the client's own knowledge base.
     use_scout_agent: bool = True
+    #: Once per plan (weekly) — distils the owner's rejection notes and the
+    #: editor's recurring findings into standing per-business rules for the
+    #: copywriter, stored as a `learned:` prompt addendum. The only step that
+    #: turns feedback into behaviour rather than into a report.
+    use_style_distiller: bool = True
+    #: Days of production the distiller reads. Two months, because an owner
+    #: rejects a handful of posts a month and one month rarely repeats a signal.
+    style_window_days: int = 60
+    #: Below this many feedback signals nothing is learned: rules invented
+    #: from one grumpy Tuesday would steer every post written after it.
+    style_min_signals: int = 3
+    #: How many of the business's own best-performing posts are shown to the
+    #: copywriter as the bar to clear. Zero disables the block.
+    gold_examples_count: int = 3
     #: Channels read per run. Each is one HTTP fetch of a public preview page,
     #: sequential and paced, so this is a politeness budget as much as a cost.
     scout_max_channels: int = 5

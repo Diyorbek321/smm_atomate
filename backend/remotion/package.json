@@ -1,0 +1,29 @@
+{
+  "name": "autosmm-remotion",
+  "private": true,
+  "type": "module",
+  "description": "Remotion render service for AutoSMM: draws the picture, the Python side adds sound.",
+  "scripts": {
+    "fonts": "mkdir -p public/fonts && cp ../app/assets/fonts/Unbounded.ttf ../app/assets/fonts/Manrope.ttf public/fonts/",
+    "studio": "remotion studio src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.290",
+    "@remotion/cli": "4.0.290",
+    "@remotion/fonts": "4.0.290",
+    "@remotion/noise": "4.0.290",
+    "@remotion/paths": "4.0.290",
+    "@remotion/renderer": "4.0.290",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.290"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}

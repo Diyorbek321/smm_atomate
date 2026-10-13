@@ -115,6 +115,15 @@ def _localise(script: dict) -> dict:
     if out.get("background"):
         out["background"] = fix(out["background"])
     for scene in out.get("scenes", []):
+        if scene.get("still", {}).get("src"):
+            fixed = fix(scene["still"]["src"])
+            if fixed:
+                scene["still"]["src"] = fixed
+            else:
+                # Same rule as a prop: the scene still has its copy and its
+                # grid, so it renders as the graphic version of itself rather
+                # than as a hole.
+                scene.pop("still")
         if scene.get("prop", {}).get("src"):
             fixed = fix(scene["prop"]["src"])
             if fixed:
@@ -293,7 +302,16 @@ async def render_promo(script: dict, *, prefix: str = "promo", crf: int = 19) ->
             key_shift=int(music.get("key_shift", 0)),
             rotation=int(music.get("rotation", 0)),
         ))
-        track = mix_soundtrack(_cues(localised), duration, tmp_path / "track.wav", bed=bed)
+        # `script["voice"]` is written by the composer whenever it was given
+        # measured timings. Until now nothing read it, which is why a clip cut
+        # to the rhythm of narration played that narration to no one.
+        voice = [
+            (Path(item["src"]), float(item.get("at", 0.0)))
+            for item in (localised.get("voice") or [])
+            if item.get("src") and Path(item["src"]).exists()
+        ]
+        track = mix_soundtrack(_cues(localised), duration, tmp_path / "track.wav",
+                               bed=bed, voice=voice)
 
         # Imported here rather than at module scope: video_editor pulls in the
         # caption stack, and a promo render has no business paying for it when
@@ -334,7 +352,7 @@ async def render_promo(script: dict, *, prefix: str = "promo", crf: int = 19) ->
     log.info(
         "promo_rendered", family=script.get("family", script.get("name", "?")),
         scenes=len(script["scenes"]), seconds=duration, size=stored.size,
-        issues=len(issues),
+        voiced=len(voice), issues=len(issues),
     )
     for issue in issues:
         log.warning("promo_qc", detail=issue)

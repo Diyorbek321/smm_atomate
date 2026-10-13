@@ -59,6 +59,9 @@ class HookResult:
 
 class HookAgent(BaseAgent):
     name = "hook"
+    #: One short call per post, and it writes the single most-read line of the
+    #: caption — the last place to save on model quality.
+    use_pro_model = True
 
     async def run(self, request: HookRequest) -> HookResult:
         system = await self.system_prompt(

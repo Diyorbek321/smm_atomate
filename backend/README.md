@@ -267,7 +267,7 @@ All responses share one envelope:
 | `POST` | `/generate/plan`, `/generate/item` | Trigger generation |
 | `POST` | `/generate/item/{id}/regenerate` | Rewrite with an instruction |
 | `POST` | `/generate/item/{id}/publish` | Publish immediately |
-| `POST` | `/generate/promo`, `/generate/brief`, `/generate/kinetic` | Video clips — always queued |
+| `POST` | `/generate/promo`, `/generate/brief`, `/generate/kinetic`, `/generate/remotion` | Video clips — always queued |
 | `GET` | `/generate/task/{task_id}` | Celery task state |
 | `GET/POST/PATCH/DELETE` | `/prompts` | Prompt Studio (versioned, rollback-able) |
 | `GET` | `/analytics/summary`, `/analytics/business/{id}` | Dashboard metrics |
@@ -307,6 +307,37 @@ the test suite fails if the second half is forgotten.
 > schema holding an array of objects at this nesting depth with a bare
 > `INVALID_ARGUMENT`, so table rows travel as `"nom: qiymat"` strings and every
 > archetype's copy shares one field per *meaning*. See `SceneCopy`.
+
+### Remotion engine — `/generate/remotion`
+
+A third renderer for hero clips that need real motion design: drawn-on SVG
+icons, spring physics, per-element blur, light leaks, a slow camera push.
+
+```
+RemotionPromoAgent ──copy──▶ remotion_script.build_script ──props──▶ remotion service (Node)
+   (Gemini, schema)          (bars, cues, palette)                    muted MP4 over HTTP
+                                                                              │
+             stored MP4 + cover ◀── loudnorm + encode ◀── render_bed + mix_soundtrack
+```
+
+| Piece | Where | Owns |
+|---|---|---|
+| Copy | `app/agents/remotion_promo.py` | Short Uzbek strings into a fixed schema; retries once on placeholders |
+| Timing | `app/services/remotion_script.py` | Every scene is whole bars, so cuts land on downbeats; SFX cues from the same numbers |
+| Picture | `remotion/` (React + Remotion, own container) | Layout and motion of six scenes: hook, logo, feature, list, stat, cta |
+| Sound + encode | `app/services/remotion.py` | Same bed, SFX and delivery encode as every other engine |
+
+The counting-number scene only appears when the number is literally in the
+business's knowledge base — a number on screen reads as a fact.
+
+Run it locally: `cd remotion && npm install && npm run fonts && npm start`
+(port 3001), then set `REMOTION_URL=http://localhost:3001`. In compose the
+`remotion` service is internal-only and the app containers already point at
+it. Scene layouts live in `remotion/src/scenes`; preview them with
+`npm run studio`. Adding a scene type touches three places, and
+`tests/test_remotion.py::TestContractWithTheRenderer` fails if the Python
+script and the Node validator disagree: `remotion/src/types.ts`,
+`remotion/validate.mjs`, `app/services/remotion_script.py`.
 
 ### Pillar distribution — enforced, not suggested
 

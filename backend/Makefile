@@ -28,17 +28,33 @@ seed: ## Insert a demo education-centre business
 	$(PY) scripts/seed.py
 
 # --- Database ---------------------------------------------------------------
+# Alembic runs on the host; Postgres runs in compose. Those two disagree about
+# the port, and silently: POSTGRES_PORT in .env is the in-network port (5432),
+# which is what the containers must use, while the host reaches the same server
+# on POSTGRES_HOST_PORT. Leave it and `make migrate` connects to whatever else
+# owns 5432 on this machine and fails as "password authentication failed for
+# user autosmm" — a credentials error for a port problem, which is why it costs
+# an afternoon. Overriding it only here keeps the containers' own value intact.
+HOST_PG_PORT := $(shell grep -sE '^POSTGRES_HOST_PORT=' .env | cut -d= -f2)
+DB := $(if $(HOST_PG_PORT),POSTGRES_PORT=$(HOST_PG_PORT),)
+
 migrate: ## Apply all migrations
-	.venv/bin/alembic upgrade head
+	$(DB) .venv/bin/alembic upgrade head
 
 migration: ## Create a migration: make migration m="add x"
-	.venv/bin/alembic revision --autogenerate -m "$(m)"
+	$(DB) .venv/bin/alembic revision --autogenerate -m "$(m)"
 
 downgrade: ## Roll back one migration
-	.venv/bin/alembic downgrade -1
+	$(DB) .venv/bin/alembic downgrade -1
 
 db-check: ## Fail if models and migrations have drifted apart
-	.venv/bin/alembic check
+	$(DB) .venv/bin/alembic check
+
+db-shell: ## psql into the compose Postgres from the host
+	PGPASSWORD=$$(grep -sE '^POSTGRES_PASSWORD=' .env | cut -d= -f2) \
+	psql -h 127.0.0.1 -p $(HOST_PG_PORT) \
+	     -U $$(grep -sE '^POSTGRES_USER=' .env | cut -d= -f2) \
+	     -d $$(grep -sE '^POSTGRES_DB=' .env | cut -d= -f2)
 
 # --- Quality ----------------------------------------------------------------
 test: ## Run the test suite

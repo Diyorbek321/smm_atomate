@@ -10,6 +10,7 @@ import { DashboardHome } from './components/DashboardHome';
 import { BusinessManager } from './components/BusinessManager';
 import { PromptStudio } from './components/PromptStudio';
 import { ContentStudio } from './components/ContentStudio';
+import { VideoPromptStudio } from './components/VideoPromptStudio';
 import { IntegrationSettings } from './components/IntegrationSettings';
 import { SystemLogs } from './components/SystemLogs';
 import { NotificationBell } from './components/NotificationBell';
@@ -51,6 +52,7 @@ export default function App() {
       case 'businesses': return <BusinessManager />;
       case 'prompts': return <PromptStudio />;
       case 'planner': return <ContentStudio />;
+      case 'video-prompt': return <VideoPromptStudio />;
       case 'logs': return <SystemLogs />;
       case 'integrations': return <IntegrationSettings />;
       default: return <DashboardHome />;

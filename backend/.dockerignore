@@ -10,3 +10,6 @@ media
 .env
 htmlcov
 .coverage
+
+# The Remotion service builds its own image (remotion/Dockerfile).
+remotion/

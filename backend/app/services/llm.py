@@ -252,6 +252,37 @@ def get_llm() -> LLMClient:
     return _client
 
 
+_review_client: LLMClient | None = None
+_review_signature: str | None = None
+
+
+def get_review_llm() -> LLMClient:
+    """Client for the editor's pass — a different family than the writer's.
+
+    `REVIEW_LLM_PROVIDER` names it. Unset, unconfigured, or equal to the
+    primary provider all mean "review with the main client" — the feature is
+    an upgrade when a second key exists, never a requirement. The named
+    provider goes first and the ordinary chain stands behind it, so a review
+    outage degrades to a same-family review instead of no review.
+    """
+    global _review_client, _review_signature
+
+    name = (settings.review_llm_provider or "").strip().lower()
+    if not name or name == settings.llm_provider or not _configured(name):
+        return get_llm()
+
+    chain = [name] + [p for p in provider_chain() if p != name]
+    signature = ",".join(chain)
+    if _review_client is not None and _review_signature == signature:
+        return _review_client
+
+    clients = [_build_client(p) for p in chain]
+    _review_client = clients[0] if len(clients) == 1 else FallbackLLM(clients)
+    _review_signature = signature
+    log.info("review_llm_ready", chain=signature, model=_review_client.model_fast)
+    return _review_client
+
+
 def get_document_llm() -> LLMClient:
     """Client used for document understanding (PDF ingest).
 
@@ -272,7 +303,9 @@ def get_document_llm() -> LLMClient:
 
 
 def reset_llm() -> None:
-    """Drop the cached client — used by tests and after a settings change."""
-    global _client, _client_provider
+    """Drop the cached clients — used by tests and after a settings change."""
+    global _client, _client_provider, _review_client, _review_signature
     _client = None
     _client_provider = None
+    _review_client = None
+    _review_signature = None

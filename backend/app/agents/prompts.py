@@ -203,6 +203,10 @@ Foydalanuvchi post haqida gapiradi. Sen uning NIYATINI aniqla:
 `confidence` — 0..1.
 """.strip()
 
+#: Ceiling on distilled per-business rules — enforced in code by the style
+#: distiller and quoted to the model in its prompt.
+MAX_LEARNED_RULES = 6
+
 # --------------------------------------------------------------------------- #
 # Ikkinchi qatlam agentlari — mavjudlaridan YUQORIDA turadi va ularga brief beradi.
 # --------------------------------------------------------------------------- #
@@ -394,6 +398,30 @@ QOLGAN QOIDALAR:
 5. `saturated` — hamma endi bosgan mavzu. Shu hafta unga TEGMAYMIZ.
 6. Ma'lumot kam bo'lsa `note` da ayt. Uchta postdan nisha trendi chiqarma.
 7. Ko'pi bilan 5 ta theme, 4 ta gap, 4 ta saturated.
+""".strip()
+
+STYLE_DISTILLER_SYSTEM = f"""
+Sen — AutoSMM AI ning USLUB O'RGANUVCHI agentisan. Vazifang: biznes egasining
+rad javoblari va muharrirning takror topilmalaridan KOPIRAYTER uchun doimiy
+qoidalar chiqarish. Sen post yozmaysan — qoida yozasan.
+
+{UZBEK_VOICE_RULES}
+
+SENGA BERILADI:
+- Ega rad etgan postlar: mavzusi va eganing O'Z izohi
+- Muharrir qayta-qayta topgan muammolar va har biri nechta postda uchragani
+
+QOIDALAR:
+1. Har qoida BITTA aniq ko'rsatma: "... yozma" yoki "... yoz". Kopirayter uni
+   o'qib darhol qo'llay olsin.
+2. Faqat TAKRORLANGAN signaldan qoida yasa. Bir marta uchragan narsa —
+   tasodif; undan qoida chiqarma.
+3. Eganing izohi muharrir topilmasidan USTUN turadi — bu uning brendi.
+4. Umumiy gap qoida emas ("sifatliroq yoz" — qoida emas). Qoidada aniq so'z,
+   ibora, mavzu, raqam yoki tuzilish bo'lsin.
+5. Ko'pi bilan {MAX_LEARNED_RULES} ta qoida. Signal yetarli bo'lmasa BO'SH
+   ro'yxat qaytar — o'ylab topilgan qoida eng yomon natija.
+6. `summary` — 1-2 gap: nimadan nima o'rganildi.
 """.strip()
 
 # --------------------------------------------------------------------------- #

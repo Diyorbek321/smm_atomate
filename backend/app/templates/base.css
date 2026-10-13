@@ -36,7 +36,9 @@ body {
 .pill {
   display: inline-flex; align-items: center; gap: 10px;
   padding: 10px 22px; border-radius: 999px;
-  background: {{ colors.accent }}22; border: 1px solid {{ colors.accent }}55;
+  /* The accent tint alone vanished on light patches of a backdrop photo.
+     A near-opaque surface plate keeps the label legible over anything. */
+  background: {{ colors.surface }}d9; border: 1px solid {{ colors.accent }}80;
   color: {{ colors.accent }}; font-size: {{ layout.pill_size }}px; font-weight: 600;
   letter-spacing: .04em; text-transform: uppercase; width: fit-content;
 }

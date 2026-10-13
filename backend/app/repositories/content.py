@@ -274,6 +274,45 @@ class ContentItemRepository(BaseRepository[ContentItem]):
                 rejected.append(topic)
         return covered[:limit], rejected[:limit]
 
+    async def top_performing(
+        self, business_id: uuid.UUID, *, days: int = 90, limit: int = 3
+    ) -> list[ContentItem]:
+        """The published posts this audience demonstrably responded to.
+
+        Ranked in Python: the numbers live inside a JSONB blob and the window
+        holds at most a few dozen published rows, so a SQL sort would buy
+        nothing but a cast. Only posts with at least one recorded reaction
+        qualify — a merely *seen* post proves nothing about its copy.
+        """
+        since = utcnow() - timedelta(days=days)
+        stmt = (
+            select(ContentItem)
+            .where(
+                ContentItem.business_id == business_id,
+                ContentItem.status == ContentItemStatus.PUBLISHED,
+                ContentItem.published_at.is_not(None),
+                ContentItem.published_at >= since,
+            )
+            .order_by(ContentItem.published_at.desc())
+            .limit(120)
+        )
+        items = (await self.session.execute(stmt)).scalars().all()
+
+        def measured(item: ContentItem) -> tuple[int, int]:
+            metrics = item.metrics or {}
+            reactions = metrics.get("reactions")
+            views = metrics.get("views")
+            return (
+                reactions if isinstance(reactions, int) else 0,
+                views if isinstance(views, int) else 0,
+            )
+
+        ranked = [
+            item for item in items if measured(item)[0] > 0 and (item.caption_tg or "").strip()
+        ]
+        ranked.sort(key=measured, reverse=True)
+        return ranked[:limit]
+
     async def produced_between(
         self, business_id: uuid.UUID, *, days: int = 30, limit: int = 400
     ) -> Sequence[ContentItem]:

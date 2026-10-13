@@ -27,15 +27,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# apt gives up on a slow link without saying so. On a link under ~200 KB/s the
+# 9.7MB package index exceeds the default timeout, and apt reports it as `Ign:`
+# — ignored, not failed — then carries on with no index at all. The very next
+# `apt-get install` dies with "unable to locate package", which reads like a
+# typo in the package list and sends you looking in the wrong place entirely.
+#
+# Placed here rather than beside the first apt block on purpose: above this
+# line sit the cached pip layers, and a new step up there would invalidate them
+# and re-download every wheel to fix a problem in the layer below.
+RUN printf 'Acquire::Retries "8";\nAcquire::http::Timeout "180";\nAcquire::https::Timeout "180";\nAcquire::http::No-Cache "true";\n' \
+    > /etc/apt/apt.conf.d/99-slow-link
+
 # Chromium for the card renderer. `--with-deps` is deliberately NOT used: it
 # resolves Ubuntu package names that do not exist on Debian slim, so the runtime
 # libraries are installed explicitly instead.
+#
+# The download is 161MB and Playwright aborts it after 30s of silence, which a
+# slow or lossy link reaches long before the file ends — it failed here at 30%.
+# There is no resume: a timeout restarts from zero, so the connection timeout is
+# raised to ten minutes *and* the whole install is retried, because one stall
+# past the timeout otherwise costs the entire build.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
         libcups2 libdrm2 libxcb1 libxkbcommon0 libx11-6 libxcomposite1 libxdamage1 \
         libxext6 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 \
         libglib2.0-0 libexpat1 \
-    && playwright install chromium \
+    && ( n=0; until PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=600000 playwright install chromium; do \
+           n=$((n+1)); [ $n -ge 5 ] && echo "chromium: 5 urinish ham yiqildi" && exit 1; \
+           echo "chromium: qayta urinish $n"; sleep 15; \
+         done ) \
     && apt-get purge -y build-essential && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 

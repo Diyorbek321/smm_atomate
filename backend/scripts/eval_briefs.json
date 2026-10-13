@@ -1,0 +1,74 @@
+{
+  "business": {
+    "name": "Bright Academy",
+    "category": "education",
+    "tone_of_voice": "casual",
+    "target_audience": "16-30 yoshli abituriyent va talabalar, Toshkent",
+    "language": "uz"
+  },
+  "knowledge": {
+    "key_offerings": [
+      {"name": "IELTS intensiv", "duration": "3 oy"},
+      {"name": "General English", "duration": "6 oy"},
+      {"name": "Matematika (DTM)", "duration": "4 oy"}
+    ],
+    "prices": [
+      {"item": "IELTS intensiv", "price": 600000, "currency": "UZS"},
+      {"item": "General English", "price": 450000, "currency": "UZS"},
+      {"item": "Matematika (DTM)", "price": 400000, "currency": "UZS"}
+    ],
+    "usps": [
+      "8.0 IELTS o'qituvchisi",
+      "guruhda 8 tadan oshmaydi",
+      "so'nggi oqimda 14 o'quvchidan 11 tasi 6.5+ oldi"
+    ],
+    "success_stories": [
+      {"name": "Dilnoza", "result": "IELTS 7.5, 4 oyda"}
+    ],
+    "faq": [
+      {"q": "Sinov darsi bormi?", "a": "Ha, birinchi dars bepul"}
+    ],
+    "phone": "+998901234567",
+    "telegram_username": "brightacademy",
+    "preferred_hashtags": ["#brightacademy", "#toshkent"],
+    "banned_topics": []
+  },
+  "briefs": [
+    {"id": "sales-feed-price", "pillar": "sales", "content_type": "feed_post",
+     "topic": "IELTS intensiv yangi oqim — narx va joylar soni",
+     "angle": "guruhda joy kam, muddat aniq", "goal": "ariza"},
+    {"id": "sales-feed-objection", "pillar": "sales", "content_type": "feed_post",
+     "topic": "Qimmat deb o'ylaganlar uchun: narxni natijaga solishtirish",
+     "angle": "e'tirozga to'g'ridan-to'g'ri javob", "goal": "qo'ng'iroq"},
+    {"id": "sales-story", "pillar": "sales", "content_type": "story",
+     "topic": "Bugun sinov darsiga yozilish oxirgi kun",
+     "angle": "muddat bosimi, yolg'onsiz", "goal": "DM"},
+    {"id": "edu-feed-mistakes", "pillar": "educational", "content_type": "feed_post",
+     "topic": "IELTS writing'da eng ko'p uchraydigan 3 xato",
+     "angle": "aniq misollar bilan", "goal": "saqlash"},
+    {"id": "edu-carousel-plan", "pillar": "educational", "content_type": "carousel",
+     "topic": "3 oyda 6.5 ga tayyorlanish rejasi, hafta-ma-hafta",
+     "angle": "amaliy reja", "goal": "saqlash va ulashish"},
+    {"id": "edu-reels", "pillar": "educational", "content_type": "reels_script",
+     "topic": "Speaking'da 1 daqiqada o'zingni qanday tanishtirasan",
+     "angle": "ko'rsat, gapirma", "goal": "obuna"},
+    {"id": "proof-feed-student", "pillar": "social_proof", "content_type": "feed_post",
+     "topic": "Dilnozaning 4 oyda 7.5 olgani — qanday qildi",
+     "angle": "hikoya, maqtanchoqliksiz", "goal": "ishonch"},
+    {"id": "proof-carousel-stats", "pillar": "social_proof", "content_type": "carousel",
+     "topic": "So'nggi oqim natijalari raqamlarda",
+     "angle": "faqat tekshirsa bo'ladigan raqamlar", "goal": "ishonch"},
+    {"id": "proof-feed-parent", "pillar": "social_proof", "content_type": "feed_post",
+     "topic": "Ota-ona nima deydi: farzandi 6 oyda gapira boshladi",
+     "angle": "ota-ona tilidan", "goal": "ishonch"},
+    {"id": "inter-quiz-grammar", "pillar": "interactive", "content_type": "telegram_quiz",
+     "topic": "Present Perfect to'g'ri ishlatilgan gapni top",
+     "angle": "oson boshlanib qiyinlashadi", "goal": "kommentariya"},
+    {"id": "inter-quiz-ielts", "pillar": "interactive", "content_type": "telegram_quiz",
+     "topic": "IELTS haqida qaysi fakt yolg'on?",
+     "angle": "mif va haqiqat", "goal": "ovoz"},
+    {"id": "inter-story-poll", "pillar": "interactive", "content_type": "story",
+     "topic": "Qaysi ko'nikma eng qiyin: writing yoki speaking?",
+     "angle": "bir teguvchi savol", "goal": "javob"}
+  ]
+}

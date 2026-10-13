@@ -2,6 +2,7 @@
 
 from app.db.base import Base
 from app.models.business import Business, BusinessAdmin, BusinessCredentials
+from app.models.clip_shape import ClipShape
 from app.models.content_item import ContentItem
 from app.models.content_plan import ContentPlan
 from app.models.enums import (
@@ -28,6 +29,7 @@ __all__ = [
     "BusinessAdmin",
     "BusinessCategory",
     "BusinessCredentials",
+    "ClipShape",
     "ContentItem",
     "ContentItemStatus",
     "ContentPillar",

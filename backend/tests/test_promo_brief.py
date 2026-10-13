@@ -24,6 +24,7 @@ from app.agents.promo_brief import (
     _missing,
 )
 from app.services.promo_scenes import archetype_names
+from app.services.promo_variety import SKELETONS
 from tests.test_agents import make_business
 
 
@@ -102,9 +103,24 @@ class TestCopyShaping:
             assert name in _FIELDS, f"«{name}» uchun maydon jadvali yo'q"
 
     def test_every_required_field_is_reachable(self):
-        for name, mapping in _FIELDS.items():
+        """Asked of `_copy_for`, not of the mapping table.
+
+        Some archetypes reach their fields through a transform — a price list
+        splits "nom: qiymat" into rows, a formula derives its letters, a set of
+        callouts is fanned out of one list. Checking the table alone calls
+        those unreachable while they work, and would have to be loosened into
+        uselessness to accommodate them.
+        """
+        filled = SceneCopy(
+            title="Sarlavha", caption="Izoh", quote="Iqtibos", author="Kim",
+            to=5, suffix="%",
+            left_title="Chap", left_body="Chap matn",
+            right_title="O'ng", right_body="O'ng matn",
+            items=["Bir: birinchi", "Ikki: ikkinchi", "Uch: uchinchi"],
+        )
+        for name in _FIELDS:
             required = {n.rstrip("[]") for n in _needs(name) if not n.endswith("?")}
-            assert required <= set(mapping.values()), name
+            assert required <= set(_copy_for(name, filled)), name
 
     def test_a_word_suffix_is_dropped_rather_than_glued_to_the_numeral(self):
         # Seen in a real clip: the model answered "soat", `short(3)` trimmed it
@@ -218,13 +234,13 @@ class TestSchema:
 class TestPrompt:
     def test_every_archetype_is_offered_to_the_model(self):
         business = make_business(id=uuid.uuid4())
-        prompt = PromoBriefAgent(session=None)._prompt(business, None, "SMM", 8)
+        prompt = PromoBriefAgent(session=None)._prompt(business, None, "SMM", 8, SKELETONS[0], [])
         for name in archetype_names():
             assert name in prompt
 
     def test_the_topic_is_stated_as_the_subject_of_every_scene(self):
         business = make_business(id=uuid.uuid4())
-        prompt = PromoBriefAgent(session=None)._prompt(business, None, "backend kursi", 8)
+        prompt = PromoBriefAgent(session=None)._prompt(business, None, "backend kursi", 8, SKELETONS[0], [])
         assert "backend kursi" in prompt
 
 

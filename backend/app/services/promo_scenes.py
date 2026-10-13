@@ -30,7 +30,7 @@ from typing import Any
 
 from app.core.exceptions import ConfigurationError
 from app.core.logging import get_logger
-from app.services.music import energy_for
+from app.services.music import energy_for, snap_to_beat
 from app.services.promo_families import Brand
 from app.utils.text import fingerprint
 
@@ -45,6 +45,8 @@ MOODS: dict[str, str] = {
     "qorongu": "calm",      # reflective minor — the default
     "minimal": "calm",
     "tezkor": "hopeful",    # brisk, forward-leaning
+    "keskin": "tense",      # the fourth bed music.py synthesises; nothing
+                            # named it before, so it was unreachable from here
     "iliq": "warm",
     "hikoya": "warm",
 }
@@ -100,8 +102,15 @@ def catalogue() -> list[dict[str, Any]]:
             "name": name,
             "needs": list(spec.get("needs", [])),
             "desc": spec.get("desc", ""),
+            # Whether this scene is built around a photograph. The agent fills
+            # the source in; a model naming a file is a model inventing one.
+            "still": bool(spec.get("still")),
         })
     return out
+
+
+def needs_still(name: str) -> bool:
+    return bool(_archetype(name).get("still"))
 
 
 def _maybe_number(value: Any) -> Any:
@@ -270,12 +279,31 @@ class _Composer:
             return None
         return self.timing[index]
 
+    def _beat(self, seconds: float) -> float:
+        """The next cut point on the pulse, at or after `seconds`.
+
+        The families engine locked its cuts to the bed and said so in its own
+        docstring; this engine replaced it and dropped the lock, so an
+        archetype clip's edit floated free of its music. A cut that lands
+        off-beat is the fastest thing to read as amateur, and nobody can say
+        why — the ear notices before the eye does.
+
+        :func:`snap_to_beat` rounds *up*, which is the only safe direction
+        here: a scene shortened onto the previous beat would cut the narration
+        off mid-word. Rounding up leaves a beat of air after the line instead,
+        which is what a person editing this by hand would leave anyway.
+        """
+        return snap_to_beat(seconds, int(self.job.get("bpm", DEFAULT_BPM)))
+
     def _duration(self, raw: dict[str, Any], index: int, voice: dict | None,
                   clip: dict | None) -> float:
+        # An authored length is a decision someone made; the bed does not get
+        # to overrule it. Same for footage, where stretching to a beat would
+        # desync the picture from its own audio.
         if raw.get("dur") is not None:
             return float(raw["dur"])
         if voice:
-            return round(float(voice["dur"]) + float(raw.get("tail", TAIL)), 3)
+            return self._beat(float(voice["dur"]) + float(raw.get("tail", TAIL)))
         if raw.get("say") is not None:
             # No measured audio for this line. Rather than fail the whole clip,
             # estimate from the delivery rate and mark the scene silent: a
@@ -287,7 +315,7 @@ class _Composer:
                     f"lekin ishda bunday gap yo'q"
                 )
             self.silent.append(index + 1)
-            return round(words / WPM * 60 + 0.6, 3)
+            return self._beat(words / WPM * 60 + 0.6)
         if clip:
             return float(clip["dur"])
         raise ConfigurationError(
@@ -342,12 +370,23 @@ class _Composer:
         ]
         for key in _META_KEYS:
             scene.pop(key, None)
+        # `still: true` on an archetype declares that it is built around a
+        # photograph; `still: {src}` on a reference is the photograph. The flag
+        # must not survive into the script, where every reader expects the
+        # dict — `_localise` calls `.get("src")` on it and the render dies.
+        if not isinstance(scene.get("still"), dict):
+            scene.pop("still", None)
 
         # The archetype knows the layout but not the words; the job knows the
         # words but not the timing. This is where they meet.
         words = self._karaoke_words(raw, voice, clip_index, duration)
         if words:
-            for pane in [scene, *(scene.get("columns") or [])]:
+            # Every pane a scene can hold, not just the ones split layouts use.
+            # A karaoke line inside a card was silently left wordless — the card
+            # rendered as an empty rectangle, which looks like a styling bug and
+            # is a missing branch here.
+            panes = [scene, *(scene.get("columns") or []), *(scene.get("cards") or [])]
+            for pane in panes:
                 for line in pane.get("lines") or []:
                     if line.get("kind") == "karaoke" and not line.get("words"):
                         line["words"] = words
@@ -398,10 +437,18 @@ class _Composer:
             "glow": job.get("glow", brand.glow()),
             "align": job.get("align", "left"),
             "flash": job.get("flash", 0.14),
+            # Script-level defaults; `template.html` lets any scene or line
+            # override them. `cut`/`rise` are what every archetype declared
+            # when these were the only values in use, so a job that says
+            # nothing renders exactly as it did before.
+            "transition": job.get("transition", "cut"),
+            "entry": job.get("entry", "rise"),
             "markColor": job.get("markColor", brand.palette.get("muted", "")),
             "music": self._music(duration),
             "scenes": scenes,
         }
+        if job.get("background"):
+            script["background"] = job["background"]
         if job.get("vignette"):
             script["vignette"] = job["vignette"]
         if brand.mark:

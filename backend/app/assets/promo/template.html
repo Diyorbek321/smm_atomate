@@ -28,6 +28,14 @@ html,body{overflow:hidden;background:#000}
 .body{font-family:'Inter',sans-serif;font-weight:400}
 .rule{transform-origin:left center}
 .strikebar{position:absolute;transform-origin:left center;border-radius:2px}
+/* One character of a typed line. Inline-block so a transform applies, and
+   `white-space:pre` so the spaces between words survive being split out. */
+.ch{display:inline-block;white-space:pre;will-change:opacity,transform}
+/* A callout: a dot on the subject, a line out to a label. */
+.callout{position:absolute;pointer-events:none}
+.coDot{position:absolute;border-radius:50%;transform:translate(-50%,-50%)}
+.coLine{position:absolute;height:2px;transform-origin:left center}
+.coLabel{position:absolute;white-space:nowrap;line-height:1.15}
 .row{display:flex;align-items:flex-start;will-change:transform,opacity,filter}
 .rowL{font-family:'Anton',sans-serif;line-height:.82;flex:none}
 .rowW{font-family:'Anton',sans-serif;line-height:.98}
@@ -38,6 +46,11 @@ html,body{overflow:hidden;background:#000}
 .photo{display:block;object-fit:cover}
 .clip{display:block;object-fit:cover}
 .footage{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+  will-change:transform;transform-origin:50% 50%}
+/* A still is footage that does not move on its own. Same box, same scrim, and
+   a slow push in setTime — because a photograph held perfectly static for four
+   seconds reads as a stalled video, not as a photograph. */
+.still{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
   will-change:transform;transform-origin:50% 50%}
 .scrim{position:absolute;inset:0;pointer-events:none}
 .table{display:flex;flex-direction:column;width:100%;will-change:transform,opacity,filter}
@@ -91,6 +104,12 @@ const inv=(t,a,b)=>b<=a?(t>=b?1:0):clamp((t-a)/(b-a),0,1);
 const eOutExpo=t=>t>=1?1:1-Math.pow(2,-9*t);
 const eOutBack=t=>{const c1=1.34,c3=c1+1;return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2)};
 const eOutCubic=t=>1-Math.pow(1-t,3);
+// A gentler overshoot than eOutBack, for type. Text that springs as hard as a
+// prop reads as a toy; text that only decelerates reads as a slide. This
+// overshoots by roughly a third of what eOutBack does — enough that the line
+// *settles* instead of stopping dead, which is most of what separates a
+// motion-designed frame from an animated one.
+const eOutSettle=t=>{const c1=0.85,c3=c1+1;return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2)};
 const eInOut=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
 const mix=(a,b,k)=>a+(b-a)*k;
 
@@ -106,6 +125,26 @@ function el(tag, cls, css){
   return n;
 }
 const colour = name => (S.palette[name] || name || S.palette.ink);
+// A fill weakened so a backdrop can read through it, and *darkened* on the
+// way. Tinting with the brand colour at strength was the first attempt and it
+// only worked for near-black brands: at Postchi's #0F2B63 a flat 0.72 navy
+// over a photograph turned it into blue fog, subject and all. A photo needs
+// its contrast kept, so the scrim is pushed toward black in proportion to how
+// light the brand is, and its alpha eased down at the same time. Line art on
+// a near-black brand lands where it always did.
+const scrim = (value, alpha) => {
+  const hex = String(value).trim();
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if(!m) return hex;
+  const n = parseInt(m[1], 16);
+  let [r,g,b] = [n>>16&255, n>>8&255, n&255];
+  const lum = (0.2126*r + 0.7152*g + 0.0722*b) / 255;
+  const k = Math.max(0, Math.min(1, (lum - 0.05) / 0.14));   // 0 near-black, 1 mid-tone
+  const toBlack = 0.62 * k;
+  r = Math.round(r * (1-toBlack)); g = Math.round(g * (1-toBlack)); b = Math.round(b * (1-toBlack));
+  const a = alpha != null ? alpha : 0.72 - 0.17 * k;
+  return `rgba(${r},${g},${b},${a.toFixed(3)})`;
+};
 const fmt = (v, sep) => sep===false ? String(v)
   : String(v).replace(/\B(?=(\d{3})+(?!\d))/g, sep||' ');
 
@@ -151,16 +190,52 @@ window.build = function(script){
           +'rgba(0,0,0,.16) 60%,rgba(0,0,0,.80) 100%)'}));
       }
     }
+    // A photograph as the scene itself, rather than as texture behind it.
+    // `S.background` sits under everything at low contrast; this is the
+    // opposite — the picture is the subject and the copy sits on it, which is
+    // the shape short-form actually rewards.
+    let still=null;
+    if(sc.still && sc.still.src){
+      const st=sc.still;
+      const im=el('img','still'); im.src=st.src;
+      if(st.fit) im.style.objectFit=st.fit;
+      if(st.filter) im.style.filter=st.filter;
+      holder.appendChild(im);
+      still={node:im, spec:st};
+      if(st.scrim!==false){
+        holder.appendChild(el('div','scrim',{background: st.scrim ||
+          'linear-gradient(180deg,rgba(0,0,0,.58) 0%,rgba(0,0,0,.06) 30%,'
+          +'rgba(0,0,0,.20) 56%,rgba(0,0,0,.86) 100%)'}));
+      }
+    }
     if(sc.grid){
       const g = sc.grid===true?{}:sc.grid;
       const c = g.color || 'rgba(255,255,255,.075)', sz = u(g.size||120);
       const gcss = {backgroundImage:
         `linear-gradient(${c} 1px,transparent 1px),linear-gradient(90deg,${c} 1px,transparent 1px)`,
         backgroundSize:`${sz} ${sz}`};
-      if(g.bg) gcss.backgroundColor=colour(g.bg);
+      // `gridbg` covers the whole frame, so an opaque fill here hides
+      // `S.background` completely — which is why the backdrop layer looked
+      // wired up and rendered nothing at all. The dark brand fill becomes a
+      // scrim when there is a picture to show; the authored light panels
+      // (#EDEDEE, #FFFFFF) stay solid, because a photo behind a white card
+      // stops being a card.
+      if(g.bg) gcss.backgroundColor =
+        (S.background && g.bg === 'bg') ? scrim(colour(g.bg)) : colour(g.bg);
       holder.appendChild(el('div','gridbg',gcss));
     }
-    if(sc.layout==='split'){
+    if(sc.layout==='cards'){
+      // `makePane` has always taken arbitrary geometry; only the layout branch
+      // was hard-coded to a half-and-half split. Cards are the same machinery
+      // with the geometry read from the archetype instead of computed from a
+      // cut, which is why this is six lines rather than a new renderer.
+      (sc.cards||[]).forEach(card=>{
+        panes.push(makePane(holder, card, sc, {
+          left:u(card.x||0), top:u(card.y||0),
+          width:u(card.w||520), height:u(card.h||620),
+        }));
+      });
+    } else if(sc.layout==='split'){
       const vertical = sc.axis==='vertical';
       const cut = sc.splitAt!=null ? sc.splitAt : 0.5;
       (sc.columns||[]).forEach((col,ci)=>{
@@ -183,7 +258,7 @@ window.build = function(script){
       holder.insertBefore(ghost, holder.firstChild);
     }
     stage.appendChild(holder);
-    EL.scenes.push({holder,panes,ghost,footage,spec:sc});
+    EL.scenes.push({holder,panes,ghost,footage,still,spec:sc});
   });
 
   if(S.mark){
@@ -217,7 +292,7 @@ window.fit = function(){ fitLines(); setTime(0); };
 // display'da 1246px joy egallaydi. Modelga har maydon uchun alohida belgi
 // chegarasini o'rgatishdan ko'ra, tartibning o'zi moslashgani ishonchliroq.
 function fitLines(){
-  const SKIP = ['rule','photo','video','option','table','stack','capsule','karaoke','label','phone'];
+  const SKIP = ['rule','photo','video','option','table','stack','capsule','karaoke','label','phone','callout'];
   EL.scenes.forEach(s=>{
     const was = s.holder.style.display;
     s.holder.style.display = 'block';
@@ -278,6 +353,15 @@ function makePane(holder, src, sc, geo){
     textAlign:align,
   });
   if(src.bg) css.background=colour(src.bg);
+  // A card is a pane that looks like an object rather than a region: rounded,
+  // lifted off the background, and clipping whatever it holds. Everything a
+  // full-bleed pane does stays exactly as it was — none of this applies
+  // unless the archetype asks for it.
+  if(src.radius!=null) css.borderRadius=u(src.radius);
+  if(src.shadow!==false && (src.radius!=null || src.card)){
+    css.boxShadow=`0 ${u(src.shadowY!=null?src.shadowY:26)} ${u(src.shadowBlur!=null?src.shadowBlur:64)} rgba(0,0,0,${src.shadowAlpha!=null?src.shadowAlpha:0.28})`;
+  }
+  if(src.stroke) css.border=`${u(src.strokeWidth||1.5)} solid ${src.stroke}`;
   const pane=el('div','pane',css);
   const nodes=(src.lines||[]).map(ln=>makeLine(ln,pane,align));
   holder.appendChild(pane);
@@ -396,6 +480,41 @@ function makeLine(ln, box, align){
       background:`linear-gradient(90deg, ${colour(ln.color||'accent')}, transparent)`});
     box.appendChild(n); return {node:n,spec:ln,kind};
   }
+  if(kind==='callout'){
+    // A dot on the thing, a line out, a label at the end. Absolutely placed
+    // rather than laid out in the pane's flow: a callout points at a specific
+    // pixel of a photograph, and flow layout cannot express "there".
+    const n=el('div','callout',{left:'0',top:'0',width:'100%',height:'100%'});
+    const colour_ = colour(ln.color||'accent');
+    const angle = ln.angle!=null ? ln.angle : 0;
+    const len = ln.len!=null ? ln.len : 240;
+
+    const dot=el('i','coDot',{left:u(ln.x||0),top:u(ln.y||0),
+      width:u(ln.dot||14),height:u(ln.dot||14),background:colour_,
+      boxShadow:`0 0 ${u(18)} ${colour_}`});
+    const line=el('i','coLine',{left:u(ln.x||0),top:u(ln.y||0),
+      width:u(len),background:colour_,
+      transform:`rotate(${angle}deg) scaleX(0)`});
+    // Labels sit above the line and start where it ends, so the text never
+    // crosses the subject the dot is pinned to.
+    const rad=angle*Math.PI/180;
+    const lx=(ln.x||0)+Math.cos(rad)*len, ly=(ln.y||0)+Math.sin(rad)*len;
+    const label=el('div','coLabel',{left:u(lx+ (ln.labelDx!=null?ln.labelDx:10)),
+      top:u(ly + (ln.labelDy!=null?ln.labelDy:-14)),
+      textAlign:'left', transform:'translateY(-100%)'});
+    const head=el('div',null,{fontSize:u(ln.size||40),color:colour(ln.titleColor||'ink'),
+      fontFamily:"'Anton',sans-serif",letterSpacing:'.01em'});
+    head.textContent=ln.text||'';
+    label.appendChild(head);
+    if(ln.sub){
+      const sub=el('div',null,{fontSize:u(ln.subSize||26),
+        color:colour(ln.subColor||'muted'),marginTop:u(4)});
+      sub.textContent=ln.sub; label.appendChild(sub);
+    }
+    n.appendChild(dot); n.appendChild(line); n.appendChild(label);
+    box.appendChild(n);
+    return {node:n,spec:ln,kind,dot,line,label,angle};
+  }
   if(kind==='row'){
     const n=el('div','row',{marginTop:u(ln.gap||60),gap:u(ln.colGap||34)});
     const L=el('span','rowL',{fontSize:u(ln.letterSize||152),color:colour(ln.color||'accent'),
@@ -511,7 +630,19 @@ function makeLine(ln, box, align){
   if(ln.lineHeight) css.lineHeight=ln.lineHeight;
   if(ln.wrap){ css.whiteSpace='normal'; css.maxWidth=u(ln.wrap); }
   const n=el('span',cls,css);
-  n.textContent=ln.text||'';
+  const body=String(ln.text||'');
+  let chars=null;
+  if(ln.type){
+    // Typed out, letter by letter. Split rather than sliced: re-writing
+    // textContent every frame reflows the line and the words jump as it grows,
+    // which is the one thing a typewriter must not do.
+    chars=[...body].map(character=>{
+      const c=el('i','ch'); c.textContent=character; c.style.opacity=0;
+      n.appendChild(c); return c;
+    });
+  } else {
+    n.textContent=body;
+  }
   let bar=null;
   if(ln.strike){
     n.style.position='relative'; n.style.display='inline-block';
@@ -519,7 +650,7 @@ function makeLine(ln, box, align){
       boxShadow:`0 0 ${u(30)} ${colour(ln.strikeColor||'accent')}CC`});
     n.appendChild(bar);
   }
-  box.appendChild(n); return {node:n,spec:ln,kind,bar};
+  box.appendChild(n); return {node:n,spec:ln,kind,bar,chars};
 }
 
 // ---- kirish uslublari ----
@@ -539,7 +670,12 @@ function animLine(o, t, t0, t1, sceneEntry){
   const s=o.spec, n=o.node;
   const style = s.entry || sceneEntry || 'rise';
   const dur=s.dur!=null?s.dur:.52, bl=s.blur!=null?s.blur:16;
-  const ease = style==='scale' ? eOutBack : eOutExpo;
+  // `mask` must not overshoot: it animates a clip-path inset, and a value
+  // past 100% is not a visible overshoot, it is an invalid rectangle. Every
+  // entry that moves or rotates gets a settle instead of a dead stop.
+  const ease = style==='mask' ? eOutExpo
+             : style==='scale' ? eOutBack
+             : eOutSettle;
   const a=ease(inv(t,t0,t0+dur));
   const outAt=(s.out!=null? t0+s.out : t1-.12)+(s.outDelay||0);
   const o2=eInOut(inv(t,outAt,outAt+.26));
@@ -594,6 +730,33 @@ function animLine(o, t, t0, t1, sceneEntry){
   n.style.clipPath=clip||'none';
   n.style.filter=blur>.15&&style!=='mask'?`blur(${(blur*K).toFixed(2)}px)`:'none';
 
+  if(o.kind==='callout'){
+    // Strictly in order. A label that appears before the line reaches it is
+    // floating text; the line arriving first is what makes it a pointer.
+    const dotIn=eOutBack(inv(t,t0,t0+.26));
+    const drawIn=eOutExpo(inv(t,t0+.14,t0+.14+(s.drawDur!=null?s.drawDur:.44)));
+    const textIn=eOutSettle(inv(t,t0+.44,t0+.44+.34));
+    const gone=eInOut(o2);
+    o.dot.style.transform=`translate(-50%,-50%) scale(${dotIn.toFixed(3)})`;
+    o.dot.style.opacity=((dotIn>0?1:0)*(1-gone)).toFixed(3);
+    o.line.style.transform=`rotate(${o.angle}deg) scaleX(${drawIn.toFixed(4)})`;
+    o.line.style.opacity=(1-gone).toFixed(3);
+    o.label.style.opacity=(textIn*(1-gone)).toFixed(3);
+    o.label.style.transform=
+      `translateY(-100%) translate3d(${((1-textIn)*-12*K).toFixed(1)}px,0,0)`;
+    return;                                   // its parts move, the node does not
+  }
+  if(o.chars){
+    // Each character gets a short fade of its own, so the line arrives as a
+    // wave rather than a row of hard switches.
+    const span=s.typeDur!=null?s.typeDur:0.9, per=span/Math.max(1,o.chars.length);
+    const fade=s.typeFade!=null?s.typeFade:0.10;
+    for(let i=0;i<o.chars.length;i++){
+      const k=inv(t, t0+i*per, t0+i*per+fade);
+      o.chars[i].style.opacity=k.toFixed(3);
+      o.chars[i].style.transform=`translate3d(0,${((1-k)*7*K).toFixed(2)}px,0)`;
+    }
+  }
   if(o.bar){
     const at=s.strikeAt!=null?s.strikeAt:1.05;
     const sw=eOutExpo(inv(t,t0+at,t0+at+.50));
@@ -652,7 +815,7 @@ window.measure = function(){
       - parseFloat(getComputedStyle(p.pane).paddingLeft)
       - parseFloat(getComputedStyle(p.pane).paddingRight);
     p.nodes.forEach(o=>{
-      if(['rule','photo','option','table','video','stack','capsule','karaoke','label','phone'].includes(o.kind)) return;
+      if(['rule','photo','option','table','video','stack','capsule','karaoke','label','phone','callout'].includes(o.kind)) return;
       const w=o.node.scrollWidth;
       if(w > avail+1) issues.push({axis:'x', scene:si+1, pane:pi+1,
         text:(o.spec.text||o.spec.word||o.spec.letter||o.kind).slice(0,34),
@@ -741,6 +904,15 @@ window.setTime = function(t){
         v.style.transform=`scale(${mix(1,1+src.zoom,kk).toFixed(4)})`;
       }
     }
+    if(s.still){
+      // Ken Burns across the scene's own span, not the clip's: each still
+      // starts its move when its scene does, so a cut lands on a fresh push
+      // rather than midway through someone else's.
+      const kk=inv(t,t0,t1), z=s.still.spec.zoom!=null?s.still.spec.zoom:0.10;
+      const dx=(s.still.spec.pan!=null?s.still.spec.pan:-18)*kk*K;
+      s.still.node.style.transform=
+        `scale(${(1+z*kk).toFixed(4)}) translate3d(${dx.toFixed(1)}px,${(dx*0.6).toFixed(1)}px,0)`;
+    }
     s.panes.forEach(p=>p.nodes.forEach(o=>{
       if(o.kind!=='video' && o.kind!=='phone') return;
       if(!o.video) return;                      // phone rasm bilan ham bo'ladi
@@ -750,8 +922,29 @@ window.setTime = function(t){
       if(Math.abs(o.video.currentTime-want) > 0.008) o.video.currentTime=want;
     }));
     const sceneEntry=s.spec.entry||S.entry;
-    s.panes.forEach(p=>p.nodes.forEach(o=>
-      animLine(o,t,t0+(o.spec.at||0),t1,p.spec.entry||sceneEntry)));
+    // A card with its own `at` enters by itself. Three cards landing together
+    // is one composition arriving; landing in sequence is an edit, and the
+    // difference is most of why a card layout reads as designed.
+    s.panes.forEach(p=>{
+      const c=p.spec;
+      if(c.at==null) return;
+      const a=eOutSettle(inv(t,t0+c.at,t0+c.at+(c.dur!=null?c.dur:0.52)));
+      const dy=(c.dy!=null?c.dy:56)*(1-a)*K;
+      const dx=(c.dx!=null?c.dx:0)*(1-a)*K;
+      p.pane.style.opacity=a.toFixed(4);
+      p.pane.style.transform=
+        `translate3d(${dx.toFixed(1)}px,${dy.toFixed(1)}px,0) scale(${(0.96+0.04*a).toFixed(4)})`;
+    });
+    s.panes.forEach(p=>{
+      // Only a card carries its own numeric `at`. A full-bleed or split pane
+      // *is* the scene spec, whose `at` is the [start, end] pair — adding that
+      // to a number gives JavaScript a string, and every line in every
+      // archetype silently stops animating. Typed rather than truthy-checked
+      // for exactly that reason.
+      const paneAt = typeof p.spec.at === 'number' ? p.spec.at : 0;
+      p.nodes.forEach(o=>
+        animLine(o,t,t0+paneAt+(o.spec.at||0),t1,p.spec.entry||sceneEntry));
+    });
   });
 
   if(EL.mark){

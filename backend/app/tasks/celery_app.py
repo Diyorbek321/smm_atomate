@@ -53,6 +53,11 @@ celery_app.conf.update(
         "app.tasks.generation.generate_weekly_plan": {"time_limit": 1800, "soft_time_limit": 1740},
         "app.tasks.generation.generate_single_item": {"time_limit": 600, "soft_time_limit": 570},
         "app.tasks.generation.regenerate_item": {"time_limit": 600, "soft_time_limit": 570},
+        # Planning is one model call; rendering is minutes of browser plus a
+        # recording to split. Giving them one limit would either cut a render
+        # short or let a hung plan hold a worker for half an hour.
+        "app.tasks.generation.plan_brief_clip": {"time_limit": 300, "soft_time_limit": 270},
+        "app.tasks.generation.render_planned_clip": {"time_limit": 1800, "soft_time_limit": 1740},
     },
 )
 

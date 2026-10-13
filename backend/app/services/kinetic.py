@@ -328,13 +328,27 @@ def sfx_library() -> dict[str, list[float]]:
 CUE_PAN = {"whoosh": 0.55, "riser": 0.30}
 
 
+#: How far the bed drops under narration. Speech and a synthesised bed occupy
+#: the same midrange, so anything gentler leaves the words fighting the music.
+VOICE_DUCK = 0.62
+#: Narration sits above the bed rather than level with it — it is the content.
+VOICE_GAIN = 1.0
+
+
 def mix_soundtrack(
     cues: list[tuple[str, float, float]],
     duration: float,
     path: Path,
     bed: Bed | array.array | None = None,
+    voice: list[tuple[Path, float]] | None = None,
 ) -> Path:
-    """Sum every cue (and the music bed) into one stereo WAV — one ffmpeg input."""
+    """Sum every cue (and the music bed) into one stereo WAV — one ffmpeg input.
+
+    ``voice`` is `(wav, start seconds)` per narrated line. It is mixed centre
+    and dry, and the bed and cues are ducked underneath it: music that competes
+    with the narration is the single fastest way to make a clip unwatchable,
+    and it is not fixable later in the pipeline.
+    """
     library = sfx_library()
     total = int((duration + 0.6) * SAMPLE_RATE)
     left = array.array("d", bytes(8 * total))
@@ -364,7 +378,48 @@ def mix_soundtrack(
             left[index] += sample * gain_l
             right[index] += sample * gain_r
 
+    if voice:
+        _lay_voice(left, right, voice, total)
+
     return write_wav(Bed(soften(left), soften(right)), path)
+
+
+def _lay_voice(left: array.array, right: array.array,
+               voice: list[tuple[Path, float]], total: int) -> None:
+    """Duck what is already mixed, then place the narration on top.
+
+    Order matters and only in this direction: the duck has to be applied to the
+    bed and the cues *before* the speech is added, or the envelope would pull
+    the speech down along with the music it was cut for.
+    """
+    from app.services.tts import envelope, read_mono
+
+    gate = envelope(voice, total, rate=SAMPLE_RATE)
+    if gate is not None:
+        for index in range(total):
+            gain = 1.0 - VOICE_DUCK * gate[index]
+            left[index] *= gain
+            right[index] *= gain
+
+    for wav, at in voice:
+        try:
+            samples, rate = read_mono(Path(wav))
+        except Exception as exc:  # a line that will not open is a silent scene
+            log.warning("voice_unreadable", src=str(wav), error=str(exc)[:160])
+            continue
+        if rate != SAMPLE_RATE:
+            # tts.py hands over at the mix rate; anything else is a stray file
+            # and resampling it here would hide where it came from.
+            log.warning("voice_rate_mismatch", src=str(wav), rate=rate)
+            continue
+        start = int(max(0.0, at) * SAMPLE_RATE)
+        for offset, sample in enumerate(samples):
+            index = start + offset
+            if index >= total:
+                break
+            value = sample * VOICE_GAIN
+            left[index] += value
+            right[index] += value
 
 
 def soften(samples: array.array) -> array.array:

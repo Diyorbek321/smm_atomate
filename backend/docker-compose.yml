@@ -11,8 +11,14 @@ x-app: &app
     CELERY_BROKER_URL: redis://redis:6379/1
     CELERY_RESULT_BACKEND: redis://redis:6379/2
     MEDIA_ROOT: /app/media
+    REMOTION_URL: http://remotion:3001
   volumes:
     - media:/app/media
+  # The host resolver is a systemd-resolved stub that goes deaf whenever the
+  # VPN reconnects, and Docker forwards container DNS straight to it — that is
+  # what stalled the bot for hours with "Temporary failure in name resolution".
+  # Public resolvers keep the containers reachable across VPN transitions.
+  dns: [1.1.1.1, 8.8.8.8]
   depends_on:
     postgres: {condition: service_healthy}
     redis: {condition: service_healthy}
@@ -81,6 +87,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       MEDIA_ROOT: /app/media
+      REMOTION_URL: http://remotion:3001
       LLM_MAX_RETRY_WAIT: 120
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d generation@$$HOSTNAME | grep -q pong"]
@@ -92,6 +99,22 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
+
+  # --- Remotion render service (React/SVG motion, picture only) ----------
+  # The generation worker POSTs a script and gets a muted MP4 back; sound and
+  # the delivery encode stay in Python. Internal only — no host port.
+  remotion:
+    build:
+      context: .
+      dockerfile: remotion/Dockerfile
+    environment:
+      # Frame-level parallelism *within* one render (browser tabs). Jobs are
+      # already queued one at a time; 1 keeps a render well inside mem_limit.
+      # Raise only after measuring peak RSS.
+      REMOTION_CONCURRENCY: ${REMOTION_CONCURRENCY:-1}
+    mem_limit: 2g
+    dns: [1.1.1.1, 8.8.8.8]
+    restart: unless-stopped
 
   # --- Publishing (short tasks, higher concurrency) ------------------------
   worker-publishing:

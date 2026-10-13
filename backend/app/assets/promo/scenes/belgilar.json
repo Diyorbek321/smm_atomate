@@ -1,0 +1,61 @@
+{
+  "desc": "Rasm ustida belgilar: nuqtadan chiziq chiqib, yorliqqa boradi. Mahsulot yoki joyning xususiyatlarini ko'rsatish uchun.",
+  "needs": [
+    "a_text",
+    "b_text",
+    "c_text?"
+  ],
+  "still": true,
+  "align": "left",
+  "valign": "bottom",
+  "transition": "cut",
+  "lines": [
+    {
+      "kind": "callout",
+      "x": 250,
+      "y": 620,
+      "angle": -28,
+      "len": 300,
+      "text": "{{s.a_text}}",
+      "sub": "{{s.a_sub|}}",
+      "at": 0.24,
+      "dur": 0.5,
+      "out": 99
+    },
+    {
+      "kind": "callout",
+      "x": 760,
+      "y": 900,
+      "angle": 18,
+      "len": 210,
+      "text": "{{s.b_text}}",
+      "sub": "{{s.b_sub|}}",
+      "labelDx": -420,
+      "labelDy": 70,
+      "at": 0.66,
+      "dur": 0.5,
+      "out": 99
+    },
+    {
+      "kind": "callout",
+      "x": 380,
+      "y": 1230,
+      "angle": -14,
+      "len": 340,
+      "text": "{{s.c_text|}}",
+      "sub": "{{s.c_sub|}}",
+      "at": 1.08,
+      "dur": 0.5,
+      "out": 99
+    },
+    {
+      "kind": "karaoke",
+      "size": 40,
+      "wrap": 860,
+      "gap": 120,
+      "at": 0.2,
+      "dur": 0.4,
+      "out": 99
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "desc": "Suzuvchi kartochkalar: ikki oq kartochka bir-birining ustiga tushadi, pastdan uchinchisi gapni olib keladi. Ikki narsani yonma-yon qo'yish uchun — taqqoslash emas, ko'rsatish.",
+  "needs": [
+    "leftTitle",
+    "leftBody",
+    "rightTitle",
+    "rightBody"
+  ],
+  "grid": {
+    "bg": "bg",
+    "color": "rgba(255,255,255,.075)",
+    "size": 120
+  },
+  "layout": "cards",
+  "transition": "cut",
+  "cards": [
+    {
+      "x": 62,
+      "y": 336,
+      "w": 486,
+      "h": 604,
+      "bg": "#F4F5F7",
+      "radius": 40,
+      "pad": 54,
+      "shift": -60,
+      "align": "left",
+      "valign": "center",
+      "at": 0.05,
+      "dur": 0.54,
+      "dy": 64,
+      "dx": -34,
+      "lines": [
+        {
+          "kind": "kicker",
+          "text": "{{s.leftTitle}}",
+          "size": 26,
+          "color": "#6E7176",
+          "at": 0.1,
+          "dur": 0.34,
+          "out": 99
+        },
+        {
+          "kind": "display",
+          "text": "{{s.leftBody}}",
+          "size": 54,
+          "color": "#17191C",
+          "gap": 20,
+          "wrap": 366,
+          "lineHeight": 1.06,
+          "at": 0.18,
+          "dur": 0.38,
+          "out": 99
+        }
+      ]
+    },
+    {
+      "x": 520,
+      "y": 214,
+      "w": 498,
+      "h": 604,
+      "bg": "#FFFFFF",
+      "radius": 40,
+      "pad": 54,
+      "shift": -60,
+      "align": "left",
+      "valign": "center",
+      "at": 0.3,
+      "dur": 0.54,
+      "dy": 70,
+      "dx": 34,
+      "lines": [
+        {
+          "kind": "kicker",
+          "text": "{{s.rightTitle}}",
+          "size": 26,
+          "color": "accent",
+          "at": 0.1,
+          "dur": 0.34,
+          "out": 99
+        },
+        {
+          "kind": "display",
+          "text": "{{s.rightBody}}",
+          "size": 54,
+          "color": "#17191C",
+          "gap": 20,
+          "wrap": 378,
+          "lineHeight": 1.06,
+          "at": 0.18,
+          "dur": 0.38,
+          "out": 99
+        }
+      ]
+    },
+    {
+      "x": 130,
+      "y": 966,
+      "w": 820,
+      "h": 392,
+      "bg": "#0F1418",
+      "radius": 36,
+      "pad": 52,
+      "shift": -60,
+      "stroke": "rgba(255,255,255,.14)",
+      "align": "left",
+      "valign": "center",
+      "at": 0.62,
+      "dur": 0.5,
+      "dy": 52,
+      "lines": [
+        {
+          "kind": "karaoke",
+          "size": 36,
+          "wrap": 700,
+          "glass": false,
+          "at": 0.08,
+          "dur": 0.4,
+          "out": 99
+        }
+      ]
+    }
+  ]
+}

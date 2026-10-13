@@ -15,7 +15,7 @@ from app.schemas.prompt import PromptTemplateCreate, PromptTemplateRead, PromptT
 router = APIRouter(prefix="/prompts", tags=["prompts"])
 
 #: Agents that can be overridden — mirrors `BaseAgent.name` values.
-KNOWN_AGENTS = ["strategist", "copywriter", "visual", "editor", "onboarding", "feedback"]
+KNOWN_AGENTS = ["strategist", "copywriter", "visual", "editor", "onboarding", "feedback", "video_prompt"]
 
 
 @router.get("/agents", response_model=APIResponse[list[str]])
@@ -27,6 +27,7 @@ async def list_agents(_: AuthDep) -> APIResponse[list[str]]:
 async def get_default_prompt(agent: str, _: AuthDep) -> APIResponse[dict]:
     """Expose the built-in prompt so the studio can start from it."""
     from app.agents import prompts as prompt_lib
+    from app.agents.video_prompt import SYSTEM as VIDEO_PROMPT_SYSTEM
 
     mapping = {
         "strategist": prompt_lib.STRATEGIST_SYSTEM,
@@ -35,6 +36,7 @@ async def get_default_prompt(agent: str, _: AuthDep) -> APIResponse[dict]:
         "editor": prompt_lib.EDITOR_SYSTEM,
         "onboarding": prompt_lib.ONBOARDING_SYSTEM,
         "feedback": prompt_lib.VOICE_INSTRUCTION_SYSTEM,
+        "video_prompt": VIDEO_PROMPT_SYSTEM,
     }
     return APIResponse.ok({"agent": agent, "system_prompt": mapping.get(agent, "")})
 

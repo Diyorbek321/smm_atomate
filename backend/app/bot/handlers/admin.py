@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -176,11 +178,19 @@ async def clip_topic(
         )
         return
 
+    # The archetype engine, not the ten authored families. `/klip` pointed at
+    # `render_promo_clip` since before the archetypes existed, so every clip an
+    # owner asked for in Telegram was still one of ten layouts picked by a hash
+    # of the topic — none of the skeleton rotation, motion, tempo, backdrop,
+    # photo scenes or narration reached the one surface they actually use.
+    #
+    # It plans rather than renders: the owner reads their own script, so they
+    # have to be given it. The render happens when their voice comes back, or
+    # on `/ai` if they would rather the synthesiser did it.
     task_id = enqueue(
-        "app.tasks.generation.render_promo_clip",
+        "app.tasks.generation.plan_brief_clip",
         str(business.id),
         topic=topic,
-        pillar=ContentPillar.EDUCATIONAL.value,
     )
     if not task_id:
         log.warning("clip_broker_unavailable", business=str(business.id))
@@ -333,3 +343,88 @@ async def cmd_pending_count(message: Message, session: AsyncSession, admin: Busi
     counts = await ContentItemRepository(session).status_counts(admin.business_id)
     lines = [f"• {texts.status_label(ContentItemStatus(key))}: <b>{value}</b>" for key, value in counts.items()]
     await message.answer("📦 <b>Kontent holati</b>\n\n" + ("\n".join(lines) or "Bo'sh"))
+
+
+# --------------------------------------------------------------------------- #
+# The owner's own narration
+# --------------------------------------------------------------------------- #
+@router.message(F.voice | F.audio)
+async def clip_narration(
+    message: Message, state: FSMContext, session: AsyncSession, bot: Bot,
+    admin: BusinessAdmin | None,
+) -> None:
+    """A voice message, when a script is waiting on one.
+
+    Deliberately gated on a pending plan rather than on an FSM state. The task
+    that writes the script runs in a worker and cannot reach the owner's FSM,
+    and a state set optimistically before the model has answered would strand
+    anybody whose plan failed. The plan file on disk is the state, it is
+    written by whoever actually produced it, and it survives a restart.
+
+    Every other voice flow is state-guarded and its router runs first, so this
+    only sees voice that nothing else claimed.
+    """
+    from app.services import clip_plans
+
+    if admin is None:
+        return
+    if await state.get_state() is not None:
+        return                                     # somebody else's conversation
+    plan = clip_plans.load(admin.business_id)
+    if plan is None:
+        return                                     # freeform handler takes it
+
+    voice = message.voice or message.audio
+    if voice is None:                              # pragma: no cover - filter guarantees it
+        return
+
+    from app.bot.handlers.video import _download
+
+    data = await _download(bot, voice.file_id)
+    if data is None:
+        await message.answer(texts.VIDEO_DOWNLOAD_FAILED)
+        return
+
+    from app.services.storage import get_storage
+
+    folder = Path(get_storage().root) / "vo" / "raw"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{admin.business_id}-{message.message_id}.ogg"
+    target.write_bytes(data)
+
+    task_id = enqueue(
+        "app.tasks.generation.render_planned_clip",
+        str(admin.business_id),
+        recording=str(target),
+    )
+    if not task_id:
+        await message.answer(texts.CLIP_NO_QUEUE)
+        return
+    await message.answer(texts.VOICE_ACCEPTED)
+
+
+@router.message(Command("ai"))
+async def clip_with_synth_voice(
+    message: Message, state: FSMContext, session: AsyncSession,
+    admin: BusinessAdmin | None,
+) -> None:
+    """Render the pending script with the synthesiser instead of a real take."""
+    from app.services import clip_plans
+
+    if admin is None:
+        await message.answer(texts.NOT_REGISTERED)
+        return
+    if clip_plans.load(admin.business_id) is None:
+        await message.answer(texts.NO_PENDING_SCRIPT)
+        return
+
+    await state.set_state(None)
+    task_id = enqueue(
+        "app.tasks.generation.render_planned_clip",
+        str(admin.business_id),
+        voice=True,
+    )
+    if not task_id:
+        await message.answer(texts.CLIP_NO_QUEUE)
+        return
+    await message.answer(texts.CLIP_GENERATING)

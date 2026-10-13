@@ -699,14 +699,138 @@ def render_promo_carousel(
         raise self.retry(exc=exc) from exc
 
 
+@shared_task(name="app.tasks.generation.plan_brief_clip", bind=True, max_retries=1,
+             default_retry_delay=120)
+def plan_brief_clip(self: Any, business_id: str, topic: str,
+                    *, scenes: int = 0, mood: str | None = None,
+                    notify: bool = True) -> dict[str, Any]:
+    """Decide a clip and hand the owner its lines, without rendering it.
+
+    The first half of :func:`render_brief_clip`, stopped where narration would
+    begin. Recording your own voice means reading the script first, and a
+    script that is written, voiced and rendered inside one call is never seen
+    by anybody until it is too late to speak it.
+    """
+    from app.agents.promo_brief import PromoBriefAgent
+    from app.services import clip_plans
+    from app.services.brand_assets import prop_library
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            from app.repositories.business import BusinessRepository, KnowledgeBaseRepository
+
+            business = await BusinessRepository(session).get(uuid.UUID(business_id))
+            if business is None:
+                raise ValueError(f"business {business_id} not found")
+            knowledge = await KnowledgeBaseRepository(session).for_business(business.id)
+            props = [str(path) for path in prop_library(business.id, topic)]
+            planned = await PromoBriefAgent(session=session).plan(
+                business, knowledge, topic, scenes=scenes, mood=mood, props=props,
+            )
+
+        clip_plans.save(business_id, topic, planned.job,
+                        {"skeleton": planned.shape.skeleton,
+                         "opening": planned.shape.opening,
+                         "archetypes": list(planned.shape.archetypes),
+                         "scenes": planned.shape.scenes,
+                         "mood": planned.shape.mood,
+                         "backdrop": planned.shape.backdrop})
+        if notify:
+            async with session_scope() as session:
+                from app.bot.notifier import push_script
+
+                await push_script(session, uuid.UUID(business_id), planned.says,
+                                  skeleton=planned.shape.skeleton)
+        return {"business_id": business_id, "lines": planned.says,
+                "skeleton": planned.shape.skeleton, "scenes": len(planned.says)}
+
+    try:
+        return run_async(_run())
+    except Exception as exc:
+        log.warning("clip_plan_failed", business=business_id, error=str(exc)[:300])
+        raise self.retry(exc=exc) from exc
+
+
+@shared_task(name="app.tasks.generation.render_planned_clip", bind=True, max_retries=1,
+             default_retry_delay=180)
+def render_planned_clip(self: Any, business_id: str, *, recording: str | None = None,
+                        voice: bool = False, notify: bool = True) -> dict[str, Any]:
+    """Render the plan this business is holding, against a recording of it.
+
+    ``recording`` is the owner reading their own script; it is split on its own
+    pauses and the edit is cut to that delivery. Without one the clip renders
+    mute unless ``voice`` asks the synthesiser to stand in.
+    """
+    from app.agents.promo_brief import PromoBriefAgent
+    from app.services import clip_plans
+    from app.services.brand_assets import prop_library
+    from app.services.promo import render_promo
+    from app.services.promo_scenes import build_script
+    from app.services.promo_variety import Shape
+
+    async def _run() -> dict[str, Any]:
+        plan = clip_plans.load(business_id)
+        if plan is None:
+            return {"rendered": False, "reason": "no_plan"}
+
+        async with session_scope() as session:
+            from app.repositories.business import BusinessRepository, KnowledgeBaseRepository
+
+            business = await BusinessRepository(session).get(uuid.UUID(business_id))
+            if business is None:
+                raise ValueError(f"business {business_id} not found")
+            knowledge = await KnowledgeBaseRepository(session).for_business(business.id)
+            props = [str(path) for path in prop_library(business.id, plan.topic)]
+            agent = PromoBriefAgent(session=session)
+            brand = agent._brand(business, knowledge, props)
+            timing = await agent._narrate(plan.job, voice, recording)
+
+        if recording and not timing:
+            # The take did not match the script. Saying so beats rendering a
+            # mute clip and letting the owner wonder where their voice went.
+            return {"rendered": False, "reason": "recording_mismatch",
+                    "lines": len(plan.says)}
+
+        script = build_script(plan.job, brand, timing=timing)
+        result = await render_promo(script, prefix="promo-arxetip")
+
+        shape = Shape(**{**plan.shape, "archetypes": tuple(plan.shape.get("archetypes", []))})
+        async with session_scope() as session:
+            from app.repositories.clip_shape import ClipShapeRepository
+
+            await ClipShapeRepository(session).record(
+                business_id=uuid.UUID(business_id), topic=plan.topic,
+                shape=shape, seconds=int(result.seconds or 0),
+            )
+        clip_plans.clear(business_id)
+
+        if notify:
+            async with session_scope() as session:
+                from app.bot.notifier import push_clip
+
+                await push_clip(session, uuid.UUID(business_id), str(result.video.path),
+                                caption=f"🎬 {plan.topic}")
+        return {"rendered": True, "business_id": business_id, "topic": plan.topic,
+                "voiced": len(timing), "own_voice": bool(recording),
+                "seconds": result.seconds, "video": result.video.filename}
+
+    try:
+        return run_async(_run())
+    except Exception as exc:
+        log.warning("planned_clip_failed", business=business_id, error=str(exc)[:300])
+        raise self.retry(exc=exc) from exc
+
+
 @shared_task(name="app.tasks.generation.render_brief_clip", bind=True, max_retries=1, default_retry_delay=180)
 def render_brief_clip(
     self: Any,
     business_id: str,
     topic: str,
     *,
-    scenes: int = 8,
+    scenes: int = 0,
     mood: str | None = None,
+    voice: bool = True,
+    recording: str | None = None,
     notify: bool = True,
 ) -> dict[str, Any]:
     """Render a clip whose structure is composed, not chosen from ten layouts.
@@ -714,6 +838,26 @@ def render_brief_clip(
     Same renderer as :func:`render_promo_clip` — the difference is upstream: the
     agent sequences scene archetypes instead of filling one authored family, so
     two clips on different subjects come out shaped differently.
+
+    ``scenes`` defaults to zero meaning *let the skeleton decide*. It used to
+    default to eight, which held every clip to one length no matter what shape
+    it was arguing in — a countdown and a two-question answer are not the same
+    size, and a viewer reads a constant runtime as a pattern.
+
+    The shape is recorded only after the render succeeds: history is what the
+    business actually shipped, and a clip that died in the renderer should not
+    make the next one avoid its skeleton.
+
+    ``recording`` is a take of somebody reading the script, split on its own
+    pauses and measured. It beats the synthesiser whenever it is supplied: the
+    cuts land on a real delivery instead of a generated one, and it spends no
+    daily quota.
+
+    ``voice`` is on here and off in the agent's own default. Narration costs
+    daily quota, so speaking is a decision the product path makes deliberately
+    rather than something every caller gets by accident; a caller after a cheap
+    structural draft passes it false and gets the mute clip this path used to
+    produce for everyone.
     """
     from app.agents.promo_brief import PromoBriefAgent
     from app.services.brand_assets import prop_library
@@ -730,9 +874,17 @@ def render_brief_clip(
             props = [str(path) for path in prop_library(business.id, topic)]
             written = await PromoBriefAgent(session=session).write(
                 business, knowledge, topic, scenes=scenes, mood=mood, props=props,
+                voice=voice, recording=recording,
             )
 
         result = await render_promo(written.script, prefix="promo-arxetip")
+        async with session_scope() as session:
+            from app.repositories.clip_shape import ClipShapeRepository
+
+            await ClipShapeRepository(session).record(
+                business_id=uuid.UUID(business_id), topic=topic,
+                shape=written.shape, seconds=int(result.seconds or 0),
+            )
         if notify:
             async with session_scope() as session:
                 from app.bot.notifier import push_clip
@@ -743,6 +895,8 @@ def render_brief_clip(
             "business_id": business_id,
             "scenes": written.used,
             "dropped": written.dropped,
+            "skeleton": written.shape.skeleton,
+            "opening": written.shape.opening,
             "seconds": result.seconds,
             "video": result.video.filename,
             "cover": result.cover.filename if result.cover else None,
@@ -753,4 +907,61 @@ def render_brief_clip(
         return run_async(_run())
     except Exception as exc:
         log.warning("brief_clip_failed", business=business_id, error=str(exc)[:300])
+        raise self.retry(exc=exc) from exc
+
+
+@shared_task(name="app.tasks.generation.render_remotion_clip", bind=True, max_retries=1, default_retry_delay=180)
+def render_remotion_clip(
+    self: Any,
+    business_id: str,
+    topic: str,
+    *,
+    notify: bool = True,
+) -> dict[str, Any]:
+    """Write and render one clip through the Remotion service.
+
+    The agent writes copy, :mod:`app.services.remotion_script` fixes the timing
+    to the bed, the render service draws the picture and
+    :func:`app.services.remotion.render_remotion` lays the shared soundtrack.
+    """
+    from app.agents.remotion_promo import RemotionPromoAgent
+    from app.core.exceptions import ProviderError
+    from app.services.remotion import render_remotion
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            from app.repositories.business import BusinessRepository, KnowledgeBaseRepository
+
+            business = await BusinessRepository(session).get(uuid.UUID(business_id))
+            if business is None:
+                raise ValueError(f"business {business_id} not found")
+            knowledge = await KnowledgeBaseRepository(session).for_business(business.id)
+            written = await RemotionPromoAgent(session=session).write(business, knowledge, topic)
+
+        result = await render_remotion(written.script, prefix="remotion")
+        if notify:
+            async with session_scope() as session:
+                from app.bot.notifier import push_clip
+
+                await push_clip(session, uuid.UUID(business_id), str(result.video.path),
+                                caption=f"🎬 {topic}")
+        return {
+            "business_id": business_id,
+            "engine": "remotion",
+            "scenes": [scene["type"] for scene in written.script["props"]["scenes"]],
+            "seconds": result.seconds,
+            "video": result.video.filename,
+            "cover": result.cover.filename if result.cover else None,
+        }
+
+    try:
+        return run_async(_run())
+    except ProviderError as exc:
+        log.warning("remotion_clip_failed", business=business_id, error=str(exc)[:300],
+                    retryable=exc.retryable)
+        if not exc.retryable:
+            raise
+        raise self.retry(exc=exc) from exc
+    except Exception as exc:
+        log.warning("remotion_clip_failed", business=business_id, error=str(exc)[:300])
         raise self.retry(exc=exc) from exc

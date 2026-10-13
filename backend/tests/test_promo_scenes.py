@@ -175,11 +175,22 @@ class TestRepeatedRows:
 
 class TestTiming:
     def test_measured_speech_sets_the_scene_length(self):
+        """Speech sets the floor; the pulse sets where the cut actually lands.
+
+        4.0s of audio plus the tail is 4.22s, and the cut is rounded up from
+        there to the next beat. Up, never down: a scene pulled back onto the
+        previous beat would cut the narration off mid-word.
+        """
+        from app.services.music import snap_to_beat
+        from app.services.promo_scenes import DEFAULT_BPM
+
         script = build_script(
             job_with([{"use": "matn", "say": 0}], say=["bir ikki"]),
             BRAND, timing=timing_for(4.0),
         )
-        assert script["scenes"][0]["at"] == [0.0, 4.22]     # 4.0 + tail
+        end = script["scenes"][0]["at"][1]
+        assert end == snap_to_beat(4.22, DEFAULT_BPM)
+        assert end >= 4.22
 
     def test_scenes_run_back_to_back(self):
         script = build_script(
@@ -198,7 +209,12 @@ class TestTiming:
             job_with([{"use": "matn", "say": 0}], say=["bir ikki uch to'rt besh"]),
             BRAND,
         )
-        assert script["scenes"][0]["at"][1] == pytest.approx(5 / 150 * 60 + 0.6)
+        from app.services.music import snap_to_beat
+        from app.services.promo_scenes import DEFAULT_BPM
+
+        assert script["scenes"][0]["at"][1] == snap_to_beat(
+            5 / 150 * 60 + 0.6, DEFAULT_BPM
+        )
 
     def test_a_scene_with_no_length_at_all_is_refused(self):
         with pytest.raises(ConfigurationError, match="na «clip», na «say», na «dur»"):
@@ -285,8 +301,17 @@ class TestScript:
 #: Minimal valid copy for each shipped archetype, so the catalogue can be swept.
 _COPY: dict[str, dict] = {
     "auditoriya": {"items": ["bir", "ikki"]},
+    "belgilar": {"a_text": "Suv", "b_text": "Po'lat", "c_text": "Kafolat"},
     "cta": {"headline": "Salom"},
+    "formula": {"title": "T", "items": [
+        {"letter": "A", "word": "ANSWER", "desc": "javob"},
+        {"letter": "R", "word": "REASON", "desc": "sabab"}]},
     "iqtibos": {"quote": "Gap", "author": "Kim"},
+    "kartochka": {"leftTitle": "a", "leftBody": "b", "rightTitle": "c", "rightBody": "d"},
+    # The photo scenes carry no copy of their own beyond the narration; the
+    # picture is attached to the scene reference, not written by the model.
+    "kadr": {},
+    "kadrstat": {"label": "L", "to": 50},
     "matn": {},
     "narx": {"title": "T", "rows": [{"left": "a", "right": "b"}]},
     "qadamlar": {"title": "T", "items": ["bir", "ikki"]},
@@ -295,6 +320,7 @@ _COPY: dict[str, dict] = {
     "sarlavha": {"lines": [{"text": "BIR"}, {"text": "IKKI"}]},
     "stat": {"label": "L", "to": 50},
     "taqqoslash": {"leftTitle": "a", "leftBody": "b", "rightTitle": "c", "rightBody": "d"},
+    "tuzatish": {"setup": "Muammo —", "wrong": "GRAMMATIKA"},
 }
 
 

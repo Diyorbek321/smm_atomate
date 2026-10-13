@@ -22,6 +22,7 @@ os.environ.setdefault("POSTGRES_USER", "autosmm")
 os.environ.setdefault("POSTGRES_PASSWORD", "autosmm")
 os.environ.setdefault("POSTGRES_DB", "autosmm")
 os.environ["LLM_PROVIDER"] = "gemini"   # pin: .env may select another provider
+os.environ["REVIEW_LLM_PROVIDER"] = ""  # pin: the editor must not reach a real second provider
 os.environ.setdefault("GEMINI_API_KEY", "")
 os.environ.setdefault("IMAGE_PROVIDER", "none")
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "")

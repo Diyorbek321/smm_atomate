@@ -1,0 +1,15 @@
+{
+  "desc": "Noto'g'ri javobni aytib, uni chizib tashlash: «Muammo — GRAMMATIKA» → chizib tashlanadi → «emas». Haqiqiy sababni keyingi sahna aytadi.",
+  "needs": ["setup", "wrong"],
+  "grid": { "bg": "bg", "color": "rgba(255,255,255,.075)", "size": 120 },
+  "align": "left", "valign": "center", "transition": "cut", "pad": 100,
+  "lines": [
+    { "kind": "serif", "text": "{{s.setup}}", "size": 56, "color": "muted",
+      "at": 0.04, "dur": 0.40, "out": 99 },
+    { "kind": "display", "text": "{{s.wrong}}", "size": 104, "gap": 6,
+      "strike": true, "strikeAt": 1.05,
+      "at": 0.24, "dur": 0.40, "out": 99 },
+    { "kind": "display", "text": "{{s.verdict|emas.}}", "size": 104, "gap": 2,
+      "color": "accent", "at": 1.55, "dur": 0.38, "out": 99 }
+  ]
+}

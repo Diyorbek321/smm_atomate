@@ -1,0 +1,18 @@
+{
+  "desc": "Harfli formula: sarlavha, ostida harf + so'z + izoh qatorlari (A ANSWER, R REASON...). Uslub, tizim yoki qadam ketma-ketligi uchun.",
+  "needs": ["title", "items[]"],
+  "grid": { "bg": "bg", "color": "rgba(255,255,255,.075)", "size": 120 },
+  "align": "left", "valign": "center", "transition": "cut", "pad": 100,
+  "lines": [
+    { "kind": "kicker", "text": "{{s.title}}", "size": 30, "color": "accent",
+      "at": 0.04, "dur": 0.36, "out": 99 },
+    { "kind": "rule", "gap": 26, "w": 880, "color": "accent",
+      "at": 0.16, "dur": 0.55, "out": 99 },
+    { "kind": "row", "repeat": "{{s.items}}", "stagger": 0.44,
+      "letter": "{{item.letter}}", "letterSize": 118, "letterWidth": 118,
+      "color": "accent",
+      "word": "{{item.word}}", "wordSize": 62, "wordColor": "ink",
+      "desc": "{{item.desc}}", "descSize": 34, "descColor": "muted",
+      "gap": 44, "colGap": 30, "at": 0.36, "dur": 0.38, "out": 99 }
+  ]
+}

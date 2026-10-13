@@ -311,3 +311,32 @@ CLIP_GENERATING = (
     "Tayyor bo'lgach shu yerga video bo'lib tushadi."
 )
 CLIP_NO_QUEUE = "⚠️ Hozir navbat ishlamayapti. Birozdan keyin urinib ko'ring."
+
+
+#: The script, handed over so the owner can read it in their own voice. The
+#: pause instruction is not politeness — `tts.split` cuts the recording apart
+#: on those pauses, and without them the take cannot be matched to the lines.
+SCRIPT_READY = (
+    "🎬 Ssenariy tayyor — {count} ta gap («{skeleton}» tuzilishi)\n\n"
+    "{lines}\n\n"
+    "━━━━━━━━━━━━━━\n"
+    "Endi shu gaplarni <b>bitta ovozli xabar</b> qilib o'qing.\n"
+    "Har gapdan keyin <b>bir soniya to'xtang</b> — klip o'sha "
+    "to'xtashlar bo'yicha kesiladi.\n\n"
+    "Sun'iy ovoz bilan chiqarish uchun: /ai"
+)
+
+#: Sent while the recording is being split, measured and rendered.
+VOICE_ACCEPTED = "🎧 Ovoz qabul qilindi — klip tayyorlanmoqda, bir necha daqiqa."
+
+#: The take has fewer pauses than the script has lines.
+VOICE_MISMATCH = (
+    "Ovozni gaplarga ajrata olmadim — pauzalar gaplardan kam chiqdi.\n\n"
+    "Har gapdan keyin aniqroq to'xtab, qayta yozib yuboring."
+)
+
+#: No script is waiting, so a voice message means nothing in particular.
+NO_PENDING_SCRIPT = (
+    "Hozir kutayotgan ssenariy yo'q. Avval /klip deb mavzuni ayting — "
+    "ssenariyni yuboraman, keyin uni o'qib yozasiz."
+)
