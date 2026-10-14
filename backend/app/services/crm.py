@@ -51,6 +51,9 @@ class CrmConfig:
     api_base: str
     center_id: int | None = None
     push: bool = False
+    #: The client's own enrolment form (it posts to the same CRM). Public
+    #: comment replies link to it instead of asking for a number in the open.
+    form_url: str = ""
 
     @property
     def register_url(self) -> str:
@@ -81,7 +84,13 @@ def crm_config(business: Any) -> CrmConfig | None:
         api_base=api_base,
         center_id=int(center) if center not in (None, "") else None,
         push=bool(raw.get("push", False)),
+        form_url=_https(raw.get("form_url")),
     )
+
+
+def _https(value: Any) -> str:
+    url = str(value or "").strip()
+    return url if url.startswith("https://") else ""
 
 
 def _normalise(text: str) -> str:
@@ -256,7 +265,8 @@ def catalog_context(catalog: Catalog) -> str:
             lines.append(f"- {branch.get('name', 'Filial')}: " + "; ".join(facts))
     if not lines:
         return ""
-    return "SAYTDAGI RASMIY MA'LUMOT (eng ishonchli manba):\n" + "\n".join(lines)
+    return ("SAYTDAGI MA'LUMOT (bilim bazasini to'ldiradi; zid kelsa bilim bazasi to'g'ri):\n"
+            + "\n".join(lines))
 
 
 async def catalog_context_for(business: Any) -> str:

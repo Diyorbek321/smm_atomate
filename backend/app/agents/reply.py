@@ -36,15 +36,30 @@ Sen sotuvchi emassan, yordamchisan. Odam savol berdi — avval SAVOLGA javob ber
 QOIDALAR:
 - Til: o'zbekcha (lotin), jonli og'zaki. Rasmiy xat emas.
 - 2-4 gap. Uzun yozma.
-- Faktlar manbai: "SAYTDAGI RASMIY MA'LUMOT" (eng ishonchli), keyin bilim bazasi.
-  Ikkalasi bir-biriga zid bo'lsa — saytdagisi to'g'ri.
+- Faktlar manbai: bilim bazasi (egasi tasdiqlagan, eng ishonchli), keyin
+  "SAYTDAGI MA'LUMOT". Ikkalasi bir-biriga zid bo'lsa — bilim bazasidagisi to'g'ri.
 - Narx, muddat, manzil, jadval, xizmat — FAQAT shu manbalardan, aynan o'sha kurs uchun.
   Bir kursning narxini boshqasiga BERMA.
 - Manbada YO'Q narsani na tasdiqla, na inkor qil. "Bizda X yo'q" ham — o'ylab topish.
   Buning o'rniga: "Bu haqda aniq ma'lumotni operatorimiz beradi" de.
-- Manbada "saytda yo'q" deb yozilgan bo'lsa — o'sha ma'lumotni aytma, operatorga yo'naltir.
+- Saytda "saytda yo'q" deb yozilgan ma'lumot bilim bazasida ham bo'lmasa — aytma,
+  operatorga yo'naltir.
 - Daromad, natija yoki muddat VA'DA QILMA.
 - Emoji ko'pi bilan bitta. Salomlashishga gap sarflama."""
+
+
+def with_form_link(text: str, form_url: str) -> str:
+    """The answer, ending with the enrolment form when the business has one.
+
+    Appended here rather than asked of the model: a URL is the one thing a
+    model must copy exactly, and it is the thing models most like to tidy up.
+    An empty answer stays empty — that is the caller's "leave it for a human".
+    """
+    text = (text or "").strip()
+    if not text or not form_url or form_url in text:
+        return text
+    suffix = f"\n\n📝 Ro'yxatdan o'tish: {form_url}"
+    return text[: MAX_CHARS - len(suffix)].rstrip() + suffix
 
 
 class ReplyAgent(BaseAgent):
@@ -67,7 +82,10 @@ class ReplyAgent(BaseAgent):
         a better outcome than a brand account answering "I don't know" under
         its own post.
         """
-        from app.services.crm import catalog_context_for
+        from app.services.crm import catalog_context_for, crm_config
+
+        cfg = crm_config(business)
+        form_url = cfg.form_url if cfg and public else ""
 
         try:
             catalog = await catalog_context_for(business)
@@ -80,6 +98,8 @@ class ReplyAgent(BaseAgent):
             f"ODAM YOZDI: {question.strip()[:600]}",
             ("Bu — post ostidagi OCHIQ komment. Hamma o'qiydi: qisqa (1-2 gap) "
              "va shaxsiy ma'lumotsiz javob ber."
+             + (" Telefon raqam SO'RAMA va havola yozma — ro'yxatdan o'tish "
+                "havolasi javob oxiriga avtomatik qo'shiladi." if form_url else "")
              if public else
              "Bu — shaxsiy xabar (DM). Batafsilroq javob berishing mumkin."),
             ("Javob foydali bo'lgandan KEYIN, oxirida bir marta telefon raqam so'ra."
@@ -95,9 +115,10 @@ class ReplyAgent(BaseAgent):
                     SYSTEM.format(channel=channel), business_id=business.id
                 ),
                 temperature=0.3,
-                max_tokens=400,
+                # Headroom for the fallback's reasoning tokens; MAX_CHARS caps the reply.
+                max_tokens=1500,
             )
         except Exception as exc:
             log.warning("reply_failed", business=str(business.id), error=str(exc)[:200])
             return ""
-        return (text or "").strip()[:MAX_CHARS]
+        return with_form_link((text or "").strip()[:MAX_CHARS], form_url)

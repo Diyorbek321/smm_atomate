@@ -75,6 +75,16 @@ class TestConfig:
     def test_plain_http_is_refused(self):
         assert crm_config(SimpleNamespace(settings={"crm": {"api_base": "http://x/api"}})) is None
 
+    def test_reads_the_enrolment_form_link(self):
+        cfg = crm_config(SimpleNamespace(settings={"crm": {
+            "api_base": "https://x/api", "form_url": " https://x/website/#enroll "}}))
+        assert cfg is not None and cfg.form_url == "https://x/website/#enroll"
+
+    def test_a_non_https_form_link_is_dropped(self):
+        cfg = crm_config(SimpleNamespace(settings={"crm": {
+            "api_base": "https://x/api", "form_url": "javascript:alert(1)"}}))
+        assert cfg is not None and cfg.form_url == ""
+
 
 class TestMatchCourse:
     def test_matches_a_language_by_its_first_word(self):
@@ -173,6 +183,10 @@ class TestCatalogContext:
         assert "1-filial manzili" not in text
         assert "+998 93 606 62 26" in text
         assert "Angren, Mustaqillik ko'chasi 5" in text
+
+    def test_the_owner_confirmed_knowledge_base_outranks_the_site(self):
+        """The site lags behind the owner: no prices, stale durations and hours."""
+        assert "zid kelsa bilim bazasi to'g'ri" in self.text().splitlines()[0]
 
     def test_empty_catalog_is_empty(self):
         assert catalog_context(Catalog(courses=[], branches=[])) == ""
