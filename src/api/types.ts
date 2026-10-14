@@ -207,6 +207,7 @@ export interface Credentials {
   business_id: string;
   tg_bot_token: string | null;
   tg_channel_id: string | null;
+  tg_discussion_chat_id: string | null;
   ig_access_token: string | null;
   ig_account_id: string | null;
   ig_page_id: string | null;
@@ -224,6 +225,23 @@ export interface CredentialsUpdate {
   ig_page_id?: string;
   telegram_enabled?: boolean;
   instagram_enabled?: boolean;
+}
+
+export interface TelegramConnectStep {
+  key: 'channel' | 'channel_admin' | 'discussion' | 'discussion_admin';
+  ok: boolean;
+  message: string;
+}
+
+export interface TelegramConnectResult {
+  ok: boolean;
+  comments_ok: boolean;
+  saved: boolean;
+  channel_id: string;
+  title: string;
+  username: string;
+  discussion_id: string;
+  steps: TelegramConnectStep[];
 }
 
 export interface CredentialsCheck {

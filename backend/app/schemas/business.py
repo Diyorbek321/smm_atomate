@@ -104,6 +104,7 @@ class CredentialsRead(ORMModel):
     business_id: uuid.UUID
     tg_bot_token: str | None = None
     tg_channel_id: str | None = None
+    tg_discussion_chat_id: str | None = None
     ig_access_token: str | None = None
     ig_account_id: str | None = None
     ig_page_id: str | None = None

@@ -44,6 +44,7 @@ import type {
   PromptTemplateCreate,
   PromptTemplateUpdate,
   PublishLogEntry,
+  TelegramConnectResult,
 } from './types';
 
 const BASE_URL = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
@@ -186,6 +187,10 @@ export const api = {
       send<Credentials>('PUT', `/businesses/${id}/credentials`, payload),
     verifyCredentials: (id: string) =>
       send<CredentialsCheck>('POST', `/businesses/${id}/credentials/verify`),
+    telegramBot: (id: string) =>
+      get<{ username: string; id: number }>(`/businesses/${id}/telegram/bot`),
+    connectTelegram: (id: string, channel: string) =>
+      send<TelegramConnectResult>('POST', `/businesses/${id}/telegram/connect`, { channel }),
     refreshInstagramToken: (id: string) =>
       send<{ refreshed: boolean; expires_at: string | null }>(
         'POST',

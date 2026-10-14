@@ -23,6 +23,7 @@ import {
 import { useApp } from '../AppContext';
 import { api } from '../api/client';
 import { errorLabel } from './shared';
+import { TelegramConnect } from './TelegramConnect';
 import type { Credentials, CredentialsCheck } from '../types';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -68,6 +69,17 @@ export function IntegrationSettings() {
       .catch((error) => addNotification(errorLabel(error), 'error'))
       .finally(() => setLoading(false));
   }, [selectedBusinessId, addNotification]);
+
+  const reloadCredentials = () => {
+    if (!selectedBusinessId) return;
+    api.businesses
+      .credentials(selectedBusinessId)
+      .then((data) => {
+        setCredentials(data);
+        setTgChannel(data.tg_channel_id ?? '');
+      })
+      .catch((error) => addNotification(errorLabel(error), 'error'));
+  };
 
   const save = async () => {
     if (!selectedBusinessId || !credentials) return;
@@ -156,6 +168,11 @@ export function IntegrationSettings() {
 
       {selectedBusinessId && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <TelegramConnect
+            businessId={selectedBusinessId}
+            credentials={credentials}
+            onConnected={reloadCredentials}
+          />
           <Card className="bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800">
             <CardHeader className="flex flex-row items-center gap-4">
               <div className="p-2 bg-sky-500/10 rounded-lg">

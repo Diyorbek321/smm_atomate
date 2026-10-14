@@ -14,10 +14,12 @@ from app.api.v1 import (
     prompts,
     system,
     telegram_chat,
+    telegram_connect,
 )
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(businesses.router)
+api_router.include_router(telegram_connect.router)
 api_router.include_router(content.router)
 api_router.include_router(generation.router)
 api_router.include_router(prompts.router)
