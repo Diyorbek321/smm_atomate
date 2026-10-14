@@ -16,6 +16,7 @@ const BACKEND_URL = (process.env.BACKEND_URL ?? "http://localhost:8000").replace
 /** Injected server-side so the admin key never reaches the browser. */
 const BACKEND_API_KEY = process.env.AUTOSMM_API_KEY ?? process.env.API_KEY ?? "";
 const PORT = Number(process.env.PORT ?? 3000);
+const HOST = process.env.HOST ?? "0.0.0.0";
 
 /** Paths forwarded verbatim to the backend. */
 const PROXY_PREFIXES = ["/api/v1", "/media", "/health"];
@@ -121,7 +122,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, HOST, () => {
     console.log(`Dashboard on http://localhost:${PORT}`);
     console.log(`Proxying ${PROXY_PREFIXES.join(", ")} → ${BACKEND_URL}`);
     if (!BACKEND_API_KEY) {

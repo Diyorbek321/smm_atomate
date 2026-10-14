@@ -51,6 +51,7 @@ const EMPTY_SUMMARY: AnalyticsSummary = {
 
 /** How often the dashboard re-reads the queue and the summary. */
 const POLL_INTERVAL_MS = 20_000;
+const OFFLINE_RETRY_MS = 15_000;
 const ITEM_PAGE_SIZE = 50;
 
 interface AppContextType {
@@ -235,9 +236,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [itemFilters, selectedBusinessId, guard, loadItems]);
 
   // Background refresh so generation and publishing progress show up by itself.
+  // Offline keeps retrying, faster: one dropped request on a flaky link must
+  // not leave the dashboard stuck behind the banner until someone presses Retry.
   useEffect(() => {
-    if (connection === 'offline') return;
-    const timer = setInterval(() => void loadEverything(true), POLL_INTERVAL_MS);
+    const interval = connection === 'offline' ? OFFLINE_RETRY_MS : POLL_INTERVAL_MS;
+    const timer = setInterval(() => void loadEverything(true), interval);
     return () => clearInterval(timer);
   }, [connection, loadEverything]);
 

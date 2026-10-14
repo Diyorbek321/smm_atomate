@@ -1,0 +1,144 @@
+# Production stack on a shared VPS (eduly-prod, 2 vCPU / 8 GB).
+#
+# The host already serves other production sites, so this file differs from
+# the development one in three ways:
+#   - images are built elsewhere and loaded (`deploy.sh`) — a build on the
+#     host can eat the memory those sites need;
+#   - nothing listens publicly: Postgres and Redis have no host port, the API
+#     is on loopback, and nginx is the only way in (Docker bypasses ufw);
+#   - every service has a ceiling, and the renderer gets one CPU at most so a
+#     video render never takes both cores from the sites beside it.
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d
+
+name: autosmm
+
+x-app: &app
+  image: autosmm-app:${TAG:?set TAG}
+  pull_policy: never
+  env_file: [.env]
+  environment: &app-env
+    ENV: production
+    DEBUG: "false"
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    REDIS_URL: redis://redis:6379/0
+    CELERY_BROKER_URL: redis://redis:6379/1
+    CELERY_RESULT_BACKEND: redis://redis:6379/2
+    MEDIA_ROOT: /app/media
+    REMOTION_URL: http://remotion:3001
+  volumes:
+    - media:/app/media
+  depends_on: &app-deps
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+    migrate: {condition: service_completed_successfully}
+  restart: unless-stopped
+  logging: &logs
+    driver: json-file
+    options: {max-size: "20m", max-file: "3"}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    mem_limit: 512m
+    restart: unless-stopped
+    logging: *logs
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 320m
+    restart: unless-stopped
+    logging: *logs
+
+  migrate:
+    <<: *app
+    command: alembic upgrade head
+    restart: "no"
+    healthcheck: {disable: true}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  api:
+    <<: *app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*
+    ports: ["127.0.0.1:${API_HOST_PORT:-8040}:8000"]
+    mem_limit: 512m
+
+  worker-generation:
+    <<: *app
+    command: celery -A app.tasks.celery_app worker -Q generation -c 1 -n generation@%h --loglevel=INFO
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d generation@$$HOSTNAME | grep -q pong"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
+    environment:
+      <<: *app-env
+      LLM_MAX_RETRY_WAIT: 120
+    mem_limit: 1536m
+    cpus: 1.0
+
+  remotion:
+    image: autosmm-remotion:${TAG:?set TAG}
+    pull_policy: never
+    environment:
+      REMOTION_CONCURRENCY: 1
+    mem_limit: 2g
+    cpus: 1.0
+    restart: unless-stopped
+    logging: *logs
+
+  worker-publishing:
+    <<: *app
+    command: celery -A app.tasks.celery_app worker -Q publishing,default -c 2 -n publishing@%h --loglevel=INFO
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d publishing@$$HOSTNAME | grep -q pong"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
+    mem_limit: 768m
+
+  beat:
+    <<: *app
+    command: celery -A app.tasks.celery_app beat --loglevel=INFO
+    healthcheck: {disable: true}
+    depends_on:
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    mem_limit: 256m
+
+  # The platform bot polls. Only one poller per token may run anywhere —
+  # stop the development bot before this one starts.
+  bot:
+    <<: *app
+    command: python -m app.bot.main
+    healthcheck: {disable: true}
+    mem_limit: 384m
+
+volumes:
+  pgdata:
+  redisdata:
+  media:
